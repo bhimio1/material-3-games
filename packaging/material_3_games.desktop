@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Games
+GenericName=Game Manager
+Comment=Your Steam, Lutris, Heroic and other games, with a gamescope Game Mode
+Exec=m3-games
+Icon=applications-games
+Terminal=false
+Categories=Game;
+Keywords=games;steam;lutris;heroic;gamescope;big picture;
+StartupWMClass=material_3_games
+Actions=GameMode;
+
+[Desktop Action GameMode]
+Name=Enter Game Mode
+Exec=m3-games game-mode

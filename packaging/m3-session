@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Hyprland login session with Material 3 Games' Game Mode.
+#
+# Runs Hyprland. When Hyprland exits because Game Mode was requested
+# (m3-games wrote "game-mode" to $XDG_RUNTIME_DIR/m3-games/next), runs
+# gamescope directly on the GPU with the big-picture UI, then starts
+# Hyprland again when gamescope exits. A normal logout ends the loop.
+set -u
+
+export M3_SESSION=1
+RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/m3-games"
+mkdir -p "$RUN"
+
+start_desktop() {
+    if command -v start-hyprland >/dev/null 2>&1; then
+        start-hyprland
+    else
+        Hyprland
+    fi
+}
+
+m3_games() {
+    if command -v m3-games >/dev/null 2>&1; then
+        command -v m3-games
+    else
+        echo "$HOME/.local/bin/m3-games"
+    fi
+}
+
+while true; do
+    rm -f "$RUN/next"
+    start_desktop
+    if [ "$(cat "$RUN/next" 2>/dev/null)" != "game-mode" ]; then
+        break
+    fi
+    rm -f "$RUN/next" "$RUN/error"
+
+    args=()
+    if [ -f "$RUN/gamescope-args" ]; then
+        mapfile -t args < "$RUN/gamescope-args"
+    fi
+    [ "${#args[@]}" -gt 0 ] || args=(-f)
+
+    started=$(date +%s)
+    gamescope "${args[@]}" -- "$(m3_games)" --big-picture > "$RUN/gamescope.log" 2>&1
+    status=$?
+    # A gamescope that dies right away usually couldn't get the GPU; say so
+    # in Hyprland instead of looping.
+    if [ "$status" -ne 0 ] && [ $(( $(date +%s) - started )) -lt 5 ]; then
+        {
+            echo "Game Mode couldn't start gamescope (exit $status):"
+            tail -n 15 "$RUN/gamescope.log"
+        } > "$RUN/error"
+    fi
+done

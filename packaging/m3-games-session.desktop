@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Hyprland (with Game Mode)
+Comment=Hyprland, with Material 3 Games able to switch to a gamescope-only Game Mode
+Exec=m3-session
+Type=Application
+DesktopNames=Hyprland
