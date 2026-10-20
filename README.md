@@ -106,6 +106,7 @@ m3-games exit-game-mode
 m3-games status --json    # {"game_mode", "session_ready", "running_game": {"id","name","pid",…}|null}
 m3-games overlay toggle   # Game Mode overlay: toggle | show | hide | screenshot | close-game
 m3-games steam-input on|off <id>...
+m3-games scheduler status|gaming|restore   # sched-ext gaming scheduler (see CachyOS)
 ```
 
 `list --json` may also include `steam_appid` and `steam_shortcut_appid` for each game, and `running_game` may include `started`, `gamescope_appid` and `unit`.
@@ -144,6 +145,28 @@ Optional tools, each offered for install where it's needed:
 - `gamemode`, `mangohud`: per-game tuning and overlay.
 - `steam`, `lutris`: their own game libraries.
 
+Install buttons install repository packages with `sudo pacman -S --needed`. Packages that aren't in any configured repository come from the AUR with `paru`, or `yay` if paru isn't installed. Which is which is checked with `pacman -Si` when the command runs.
+
+## CachyOS
+
+CachyOS works like Arch, with a few extras:
+
+- **Packages:** CachyOS's own repositories carry gamescope, MangoHud, umu-launcher and Proton-CachyOS, so Install buttons use `sudo pacman` for them, not paru. Settings → CachyOS offers `cachyos-gaming-meta` and `cachyos-gaming-applications` when they aren't installed.
+- **Proton-CachyOS:**
+  - Steam's compatibility tool picker lists `proton-cachyos` and `proton-cachyos-slr` from `/usr/share/steam/compatibilitytools.d` as "Proton-CachyOS".
+  - Windows games run with umu use Proton-CachyOS when it's installed and no Proton version is set. Otherwise they use GE-Proton.
+- **game-performance:** with `cachyos-settings` installed, games you start here get a "CachyOS performance profile" option. It runs the game through `game-performance`, which uses the performance power profile while you play. For Steam games, the launch-option helpers add `game-performance %command%`.
+
+  It overlaps with GameMode, so one of them is usually enough. Both can be on.
+- **sched-ext schedulers:** with `scx-scheds` and `scx-manager` (scx_loader, `scxctl`) installed, Settings → CachyOS → **Gaming scheduler** switches scheduler when Game Mode starts. The default is `scx_lavd` in gaming mode.
+  - Optionally it also switches while a game runs on the desktop.
+  - The previous scheduler comes back afterwards: when the big-picture UI quits, or from `m3-session` after gamescope exits.
+  - The Game Mode overlay shows the current scheduler, with chips to switch scheduler and mode.
+  - All of this is hidden when `scxctl` isn't installed.
+- **Login session:** fish is CachyOS's default shell. `m3-session` runs with bash directly and never reads shell rc files. The session entry uses absolute paths, so SDDM starts it the same with any login shell:
+  - The package's entry runs `/usr/bin/m3-session`.
+  - The one installed from Game Mode → **Install** runs `/usr/local/bin/m3-session` and passes the `m3-games` path in `M3_GAMES_BIN`.
+
 ## Notes
 
 - **Hyprland config syntax:** Hyprland 0.55+ uses Lua configs, where `hyprctl keyword` doesn't apply; the app uses `hyprctl eval` there. For `hyprland.conf`, rules are written in the 0.53+ `windowrule = match:class …, immediate on, …` form; older versions need `windowrulev2` syntax instead.
@@ -155,6 +178,7 @@ Optional tools, each offered for install where it's needed:
 - **Unverified parts:**
   - Guide pages are parsed from Steam Community HTML, which has no API. The parser follows the class names Steam has used for years and degrades gracefully; it was tested against sample pages, not live ones.
   - The gamescope integration follows gamescope's source (steamcompmgr.cpp, Process.cpp). It was tested against an X server, not a live gamescope session.
+  - The scheduler switching follows scx-loader's `scxctl` (its subcommands and output). It was tested against a stand-in `scxctl`, not a live scx_loader.
 
 ## Configuration
 
@@ -178,6 +202,8 @@ src/
   steam/          binary/text VDF, shortcuts (Steam Input), achievements, guides, news,
                   Proton & launch options, Web API
   procenv.rs      reading other processes' environment
+  sys/            commands, terminals, background tasks, os-release and pacman (os.rs),
+                  sched-ext via scxctl (scx.rs), overlay quick settings (quick.rs)
   gamepad.rs      controller input (gilrs)
   covers.rs       cover cache, SteamGridDB
   ui/             sidebar, pages, big picture, Steam extras (steamui.rs), M3 widgets
