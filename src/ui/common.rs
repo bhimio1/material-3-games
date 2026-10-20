@@ -128,7 +128,6 @@ pub fn require(ui: &mut Ui, actions: &mut Actions, program: &str, package: &str,
         if widgets::button(ui, ButtonKind::Filled, Some(ICON_DOWNLOAD), "Install").clicked() {
             actions.push(Action::Install {
                 packages: vec![package.to_string()],
-                aur: false,
             });
         }
     });

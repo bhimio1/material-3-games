@@ -4,6 +4,7 @@
 use crate::app::App;
 use crate::config::{ColorScheme, ThemeSource};
 use crate::hypr;
+use crate::sys::task::Task;
 use crate::sys::{cmd, paths, term};
 use crate::theme::palette::{parse_hex, to_hex};
 use crate::ui::common::{self, card, row};
@@ -20,6 +21,109 @@ const SEED_PRESETS: &[&str] = &[
 #[derive(Default)]
 pub struct State {
     seed_text: Option<String>,
+    system: Task<SystemInfo>,
+    schedulers: Task<Vec<String>>,
+}
+
+/// CachyOS-related facts, re-read in the background every few seconds so
+/// the page notices installs.
+#[derive(Clone, Debug, Default)]
+pub struct SystemInfo {
+    cachyos: bool,
+    /// CachyOS gaming meta packages that aren't installed.
+    missing: Vec<String>,
+    scxctl: bool,
+}
+
+fn system_info() -> SystemInfo {
+    let cachyos = crate::sys::os::OsRelease::load().is_cachyos();
+    let missing = if cachyos {
+        crate::sys::os::CACHYOS_GAMING.iter().filter(|p| !crate::sys::os::installed(p)).map(|p| p.to_string()).collect()
+    } else {
+        Vec::new()
+    };
+    SystemInfo { cachyos, missing, scxctl: crate::sys::scx::available() }
+}
+
+/// Gaming packages and the sched-ext gaming scheduler. Hidden entirely
+/// when neither applies (not CachyOS, no scxctl).
+fn cachyos_card(ui: &mut Ui, config: &mut crate::config::Config, st: &mut State, actions: &mut Vec<Action>, changed: &mut bool) {
+    st.system.poll();
+    let stale = st.system.finished_at.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(10));
+    if stale && !st.system.running() {
+        st.system.spawn(ui.ctx(), system_info);
+    }
+    let Some(info) = st.system.value.clone() else {
+        return;
+    };
+    if !info.cachyos && !info.scxctl {
+        return;
+    }
+    card(ui, if info.cachyos { "CachyOS" } else { "Scheduler" }, |ui| {
+        if info.cachyos {
+            if info.missing.is_empty() {
+                row(ui, "Gaming packages", "cachyos-gaming-meta and cachyos-gaming-applications are installed.", |ui| {
+                    ui.label(egui::RichText::new(ICON_CHECK_CIRCLE).size(22.0).color(widgets::palette(ui).primary));
+                });
+            } else {
+                let desc = format!(
+                    "CachyOS's gaming set: Proton, Wine and 32-bit libraries (cachyos-gaming-meta), plus Steam, Lutris, gamescope, MangoHud and more (cachyos-gaming-applications). Missing: {}.",
+                    info.missing.join(", ")
+                );
+                row(ui, "Gaming packages", &desc, |ui| {
+                    if widgets::button(ui, ButtonKind::Filled, Some(ICON_DOWNLOAD), "Install CachyOS gaming packages").clicked() {
+                        actions.push(Action::Install { packages: info.missing.clone() });
+                    }
+                });
+            }
+            if info.scxctl {
+                ui.separator();
+            }
+        }
+        if !info.scxctl {
+            return;
+        }
+        row(ui, "Gaming scheduler", "Switch to a sched-ext scheduler (through scx_loader) in Game Mode, and put the previous one back afterwards.", |ui| {
+            *changed |= switch(ui, &mut config.scx_gaming).changed();
+        });
+        if !config.scx_gaming {
+            return;
+        }
+        st.schedulers.poll();
+        if st.schedulers.value.is_none() && !st.schedulers.running() {
+            st.schedulers.spawn(ui.ctx(), crate::sys::scx::supported);
+        }
+        let mut list = st.schedulers.value.clone().unwrap_or_default();
+        if list.is_empty() {
+            list = ["lavd", "bpfland", "cosmos", "flash", "p2dq", "rusty"].map(String::from).to_vec();
+        }
+        ui.separator();
+        row(ui, "Scheduler", "scx_lavd is tuned for interactive and gaming loads.", |ui| {
+            egui::ComboBox::from_id_salt("scx-sched").width(160.0).selected_text(format!("scx_{}", config.scx_sched)).show_ui(ui, |ui| {
+                for s in &list {
+                    if ui.selectable_label(config.scx_sched == *s, format!("scx_{s}")).clicked() && config.scx_sched != *s {
+                        config.scx_sched = s.clone();
+                        *changed = true;
+                    }
+                }
+            });
+        });
+        ui.separator();
+        row(ui, "Mode", "The scx_loader profile to start it in.", |ui| {
+            egui::ComboBox::from_id_salt("scx-mode").width(160.0).selected_text(crate::sys::scx::mode_label(&config.scx_mode)).show_ui(ui, |ui| {
+                for (m, label) in crate::sys::scx::MODES {
+                    if ui.selectable_label(config.scx_mode == *m, *label).clicked() && config.scx_mode != *m {
+                        config.scx_mode = m.to_string();
+                        *changed = true;
+                    }
+                }
+            });
+        });
+        ui.separator();
+        row(ui, "Also for desktop games", "Use it while a game started from the library runs on the desktop, too.", |ui| {
+            *changed |= switch(ui, &mut config.scx_desktop).changed();
+        });
+    });
 }
 
 pub fn show(ui: &mut Ui, app: &mut App) {
@@ -135,6 +239,8 @@ pub fn show(ui: &mut Ui, app: &mut App) {
                 }
             });
         });
+
+        cachyos_card(ui, config, st, &mut actions, &mut changed);
 
         card(ui, "Cover art", |ui| {
             row(ui, "SteamGridDB API key", "Finds covers for games that have none. Get a free key at steamgriddb.com → Preferences → API.", |ui| {

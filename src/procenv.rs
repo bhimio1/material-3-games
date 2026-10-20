@@ -37,6 +37,8 @@ mod tests {
         assert_eq!(parse_environ(raw, "EMPTY").as_deref(), Some(""));
         assert_eq!(parse_environ(raw, "Steam"), None);
         // Our own environment is readable.
-        std::env::var("PATH").ok().map(|p| assert_eq!(env_var(std::process::id(), "PATH"), Some(p)));
+        if let Ok(p) = std::env::var("PATH") {
+            assert_eq!(env_var(std::process::id(), "PATH"), Some(p));
+        }
     }
 }

@@ -115,6 +115,55 @@ fn chip_row(ui: &mut Ui, items: &[(u32, &str)], value: u32) -> Option<u32> {
     pick
 }
 
+/// The sched-ext scheduler, with a quick switcher. Only with scxctl.
+fn scheduler_card(ui: &mut Ui, o: &mut Overlay) {
+    use crate::sys::scx::{State, MODES};
+    let Some(Some(info)) = o.scx.value.clone() else {
+        return;
+    };
+    let p = o.palette.clone();
+    let mut pick: Option<State> = None;
+    common::card(ui, "CPU scheduler", |ui| {
+        ui.add_space(6.0);
+        ui.label(RichText::new(info.current.label()).color(p.on_surface_variant));
+        ui.add_space(6.0);
+        let mut scheds: Vec<String> = info.supported.clone();
+        if let Some(s) = info.current.sched() {
+            if !scheds.iter().any(|x| x == s) {
+                scheds.insert(0, s.to_string());
+            }
+        }
+        // Chip 0 is the kernel's default scheduler.
+        let mut items: Vec<(u32, String)> = vec![(0, "Default".into())];
+        items.extend(scheds.iter().enumerate().map(|(i, s)| (i as u32 + 1, s.clone())));
+        let refs: Vec<(u32, &str)> = items.iter().map(|(i, s)| (*i, s.as_str())).collect();
+        let cur = info.current.sched().and_then(|s| scheds.iter().position(|x| x == s)).map(|i| i as u32 + 1).unwrap_or(0);
+        let mode = match &info.current {
+            State::Mode { mode, .. } => mode.clone(),
+            _ => o.config.scx_mode.clone(),
+        };
+        if let Some(v) = chip_row(ui, &refs, cur) {
+            pick = Some(match v {
+                0 => State::None,
+                i => State::Mode { sched: scheds[i as usize - 1].clone(), mode: mode.clone() },
+            });
+        }
+        if let Some(sched) = info.current.sched() {
+            ui.add_space(4.0);
+            ui.label(RichText::new("Mode").color(p.on_surface));
+            let modes: Vec<(u32, &str)> = MODES.iter().enumerate().map(|(i, (_, l))| (i as u32, *l)).collect();
+            let cur = MODES.iter().position(|(m, _)| *m == mode).unwrap_or(0) as u32;
+            if let Some(v) = chip_row(ui, &modes, cur) {
+                pick = Some(State::Mode { sched: sched.to_string(), mode: MODES[v as usize].0.to_string() });
+            }
+        }
+        ui.add_space(8.0);
+    });
+    if let Some(target) = pick.filter(|t| *t != info.current) {
+        o.switch_scheduler(target);
+    }
+}
+
 fn quick_section(ui: &mut Ui, o: &mut Overlay) {
     let p = o.palette.clone();
     let mut prefs = o.prefs();
@@ -166,6 +215,7 @@ fn quick_section(ui: &mut Ui, o: &mut Overlay) {
         });
         ui.add_space(8.0);
     });
+    scheduler_card(ui, o);
     if changed {
         o.set_prefs(prefs);
     }

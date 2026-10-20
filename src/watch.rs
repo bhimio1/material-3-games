@@ -30,7 +30,24 @@ fn ours(pid: u32, launched: u32, tree: &HashSet<u32>) -> bool {
 }
 
 pub fn run(id: &str, launched: u32, started: i64) {
-    let mut config = Config::load();
+    let config = Config::load();
+    // Gaming scheduler for desktop games (Game Mode handles its own).
+    let scx = config.scx_desktop && crate::sys::scx::gaming_target(&config).is_some() && !session::big_picture_running();
+    if scx {
+        if let Err(e) = crate::sys::scx::enter_gaming(&config) {
+            eprintln!("m3-games: {e}");
+        }
+    }
+    track(id, launched, started, config);
+    // Restore once the last desktop game is over.
+    if scx && session::find_processes(&["__watch"]).is_empty() && !session::big_picture_running() {
+        if let Err(e) = crate::sys::scx::restore() {
+            eprintln!("m3-games: {e}");
+        }
+    }
+}
+
+fn track(id: &str, launched: u32, started: i64, mut config: Config) {
     let games = library::scan(&crate::sys::paths::home(), config.enabled_local());
     let Some(game) = games.into_iter().find(|g| g.id == id) else {
         return;

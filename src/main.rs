@@ -32,6 +32,8 @@ Commands:
   exit-game-mode     Leave Game Mode
   status --json      Print Game Mode state and the running game as JSON
   overlay <ACTION>   Game Mode overlay: toggle, show, hide, screenshot, close-game
+  scheduler status|gaming|restore
+                     sched-ext gaming scheduler via scxctl (Settings → CachyOS)
   steam-input on|off <ID>...
                      Add/remove Steam shortcuts so games get Steam Input
                      (closes and restarts Steam if it's running)
@@ -164,6 +166,22 @@ fn main() {
         ["status", "--json"] | ["status"] => {
             println!("{}", serde_json::to_string(&session::status()).unwrap_or_default());
             0
+        }
+        ["scheduler", what] => {
+            let config = config::Config::load();
+            let r = match *what {
+                "status" => sys::scx::current().map(|s| println!("{}", s.label())),
+                "gaming" => sys::scx::enter_gaming(&config),
+                "restore" => sys::scx::restore(),
+                _ => Err(USAGE.into()),
+            };
+            match r {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("m3-games: {e}");
+                    1
+                }
+            }
         }
         ["__run", id] => {
             let config = config::Config::load();

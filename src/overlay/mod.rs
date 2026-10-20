@@ -79,6 +79,9 @@ pub struct Overlay {
     pub brightness: Task<Option<u32>>,
     pub media: Task<Option<quick::Media>>,
     pub batteries: Task<Vec<quick::Battery>>,
+    /// sched-ext scheduler (CachyOS / scx_loader); None without scxctl.
+    pub scx: Task<Option<crate::sys::scx::Info>>,
+    pub scx_job: Task<Result<(), String>>,
     refreshed: Option<Instant>,
     pub confirm: Option<Confirm>,
     pub shot: Task<Result<PathBuf, String>>,
@@ -117,6 +120,8 @@ impl Overlay {
             brightness: Task::default(),
             media: Task::default(),
             batteries: Task::default(),
+            scx: Task::default(),
+            scx_job: Task::default(),
             refreshed: None,
             confirm: None,
             shot: Task::default(),
@@ -211,6 +216,9 @@ impl Overlay {
         if !self.batteries.running() {
             self.batteries.spawn(&self.ctx, || quick::device_batteries(std::path::Path::new("/sys/class/power_supply")));
         }
+        if !self.scx.running() && !self.scx_job.running() {
+            self.scx.spawn(&self.ctx, crate::sys::scx::info);
+        }
     }
 
     pub fn prefs(&self) -> OverlayPrefs {
@@ -230,6 +238,17 @@ impl Overlay {
     }
 
     /// Take a screenshot through gamescope, then file it under the game.
+    /// Switch the sched-ext scheduler from the overlay.
+    pub fn switch_scheduler(&mut self, target: crate::sys::scx::State) {
+        if self.scx_job.running() {
+            return;
+        }
+        if let Some(Some(info)) = self.scx.value.as_mut() {
+            info.current = target.clone();
+        }
+        self.scx_job.spawn(&self.ctx, move || crate::sys::scx::apply(&target));
+    }
+
     pub fn screenshot(&mut self) {
         if self.shot.running() {
             return;
@@ -314,8 +333,14 @@ impl Overlay {
                 Err(e) => self.notify(format!("Screenshot failed: {e}")),
             }
         }
-        for t in [&mut self.audio as &mut dyn Pollable, &mut self.brightness, &mut self.media, &mut self.batteries] {
+        for t in [&mut self.audio as &mut dyn Pollable, &mut self.brightness, &mut self.media, &mut self.batteries, &mut self.scx] {
             t.poll_any();
+        }
+        if let Some(r) = self.scx_job.take() {
+            if let Err(e) = r {
+                self.notify(e);
+            }
+            self.refresh(true);
         }
         if self.shown {
             self.refresh(false);

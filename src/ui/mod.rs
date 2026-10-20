@@ -70,7 +70,8 @@ pub enum Action {
     Back,
     Toast(String, ToastKind),
     Launch(String),
-    Install { packages: Vec<String>, aur: bool },
+    /// Repository packages with pacman, the rest from the AUR.
+    Install { packages: Vec<String> },
     OpenPath(PathBuf),
     OpenUrl(String),
     Rescan,

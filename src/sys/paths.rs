@@ -20,17 +20,6 @@ pub fn tilde(path: &Path) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tilde_paths() {
-        assert_eq!(tilde(&home().join(".config/x")), "~/.config/x");
-        assert_eq!(tilde(Path::new("/etc/x")), "/etc/x");
-    }
-}
-
 /// Expand a leading `~`.
 pub fn expand(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
@@ -40,4 +29,15 @@ pub fn expand(path: &str) -> PathBuf {
         return home();
     }
     PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tilde_paths() {
+        assert_eq!(tilde(&home().join(".config/x")), "~/.config/x");
+        assert_eq!(tilde(Path::new("/etc/x")), "/etc/x");
+    }
 }

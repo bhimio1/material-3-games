@@ -148,6 +148,10 @@ impl App {
         if big_picture && crate::gamescope::active() {
             app.gamescope = setup_gamescope(cc);
             start_overlay();
+            if app.gamescope.is_some() {
+                let config = app.config.clone();
+                crate::sys::scx::in_background(move || crate::sys::scx::enter_gaming(&config));
+            }
         }
         app.rescan();
         if let Some(err) = session::take_error() {
@@ -446,14 +450,8 @@ impl App {
             }
             Action::Toast(t, k) => self.toast(t, k),
             Action::Launch(id) => self.launch(&id),
-            Action::Install { packages, aur } => {
-                let list = packages.iter().map(|p| term::shell_quote(p)).collect::<Vec<_>>().join(" ");
-                let script = if aur {
-                    let helper = ["paru", "yay"].into_iter().find(|h| cmd::exists(h)).unwrap_or("paru");
-                    format!("{helper} -S --needed {list}")
-                } else {
-                    format!("sudo pacman -S --needed {list}")
-                };
+            Action::Install { packages } => {
+                let script = crate::sys::os::install_script(&packages);
                 match term::run(&self.config.terminal, &script) {
                     Ok(t) => self.toast(format!("Installing in {t}"), ToastKind::Info),
                     Err(e) => self.toast(e, ToastKind::Error),
@@ -595,6 +593,10 @@ impl eframe::App for App {
         if self.gamescope.is_some() {
             for pid in session::find_processes(&["__overlay"]) {
                 let _ = cmd::run("kill", &["-TERM", &pid.to_string()]);
+            }
+            // Put back the scheduler from before Game Mode.
+            if let Err(e) = crate::sys::scx::restore() {
+                eprintln!("m3-games: {e}");
             }
         }
     }

@@ -176,6 +176,14 @@ pub struct Config {
     pub steam_id: String,
     /// List owned Steam games that aren't installed (needs the key).
     pub show_uninstalled: bool,
+    /// Switch to a sched-ext scheduler (via scxctl) in Game Mode.
+    pub scx_gaming: bool,
+    /// Also while a game runs on the desktop.
+    pub scx_desktop: bool,
+    /// Scheduler name without `scx_` (`lavd`).
+    pub scx_sched: String,
+    /// scx_loader mode (`gaming`).
+    pub scx_mode: String,
 }
 
 impl Default for Config {
@@ -199,6 +207,10 @@ impl Default for Config {
             steam_api_key: String::new(),
             steam_id: String::new(),
             show_uninstalled: false,
+            scx_gaming: false,
+            scx_desktop: false,
+            scx_sched: "lavd".into(),
+            scx_mode: "gaming".into(),
         }
     }
 }
