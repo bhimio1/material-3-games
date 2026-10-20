@@ -37,10 +37,22 @@ fn env_pairs(lines: &[String]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Launching through the game's Steam shortcut, so Steam Input applies.
+pub fn uses_steam_shortcut(game: &Game, opts: &GameOptions) -> bool {
+    opts.steam_input && game.shortcut_appid.is_some() && game.steam_appid().is_none()
+}
+
 /// Build the command for `game`. `display` is the monitor size for
 /// per-game gamescope.
 pub fn plan(game: &Game, opts: &GameOptions, config: &Config, ctx: Context, display: Option<(u32, u32, u32)>) -> Plan {
     let mut p = Plan::default();
+    if let Some(appid) = game.shortcut_appid.filter(|_| uses_steam_shortcut(game, opts)) {
+        // Steam runs `m3-games __run <id>`, which applies the options below.
+        let url = format!("steam://rungameid/{}", crate::steam::shortcuts::rungameid(appid));
+        p.argv = if ctx == Context::BigPicture { vec!["steam".into(), "-silent".into(), url] } else { vec!["steam".into(), url] };
+        p.via_client = true;
+        return p;
+    }
     match &game.launch {
         Launch::Steam { appid } => {
             p.argv = if ctx == Context::BigPicture {
@@ -117,6 +129,52 @@ pub fn spawn(p: &Plan) -> Result<std::process::Child, String> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0);
+    if let Some(d) = &p.dir {
+        cmd.current_dir(d);
+    }
+    cmd.spawn().map_err(|e| format!("{prog}: {e}"))
+}
+
+/// `m3-games __run <id>`: what a Steam shortcut runs. Starts the game with
+/// its options and stays in the foreground until it's over, so Steam keeps
+/// Steam Input and its overlay active for the whole session.
+pub fn run_foreground(game: &Game, config: &Config) -> Result<i32, String> {
+    let mut opts = config.options(&game.id);
+    // Steam is already the launcher; don't loop back through it.
+    opts.steam_input = false;
+    let ctx = if crate::hypr::running() { Context::Desktop } else { Context::BigPicture };
+    let display = if ctx == Context::Desktop { crate::hypr::focused_monitor() } else { None };
+    let p = plan(game, &opts, config, ctx, display);
+    let mut child = spawn_foreground(&p)?;
+    let started = now();
+    let t = std::time::Instant::now();
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if p.via_client {
+        // Lutris/Heroic hand the game off and may exit early. Steam puts
+        // SteamGameId in our environment and the game inherits it, so wait
+        // until nothing with our SteamGameId is left.
+        if let Ok(gid) = std::env::var("SteamGameId") {
+            let mut idle = 0;
+            while idle < 3 {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                if crate::procenv::with_env("SteamGameId", &gid).is_empty() {
+                    idle += 1;
+                } else {
+                    idle = 0;
+                }
+            }
+        }
+    }
+    crate::library::record_play(&game.id, started, (t.elapsed().as_secs() + 30) / 60);
+    Ok(status.code().unwrap_or(0))
+}
+
+/// Like [`spawn`], but keeping our stdio and process group (Steam tracks
+/// the shortcut by its process tree).
+fn spawn_foreground(p: &Plan) -> Result<std::process::Child, String> {
+    let (prog, args) = p.argv.split_first().ok_or("nothing to run")?;
+    let mut cmd = Command::new(prog);
+    cmd.args(args).envs(p.env.iter().map(|(k, v)| (k, v)));
     if let Some(d) = &p.dir {
         cmd.current_dir(d);
     }
@@ -200,6 +258,23 @@ mod tests {
         assert_eq!(p.argv, ["umu-run", "/nonexistent/tool.exe", "-windowed", "two words"]);
         assert!(p.env.iter().any(|(k, v)| k == "WINEPREFIX" && v.ends_with("Games/m3-games/prefixes/tool")));
         assert!(p.env.iter().any(|(k, v)| k == "PROTONPATH" && v == "GE-Proton"));
+    }
+
+    #[test]
+    fn steam_input_route() {
+        let cfg = Config::default();
+        let mut g = test_game("lutris:3", "Celeste", None);
+        g.launch = Launch::Lutris { id: 3 };
+        g.shortcut_appid = Some(0x8000_0001);
+        let mut opts = GameOptions::default();
+        assert_eq!(plan(&g, &opts, &cfg, Context::Desktop, None).argv, ["lutris", "lutris:rungameid/3"]);
+        opts.steam_input = true;
+        let p = plan(&g, &opts, &cfg, Context::Desktop, None);
+        assert_eq!(p.argv, ["steam", "steam://rungameid/9223372041183297536"]);
+        assert!(p.via_client);
+        // Steam games never go through a shortcut.
+        g.launch = Launch::Steam { appid: "570".into() };
+        assert!(!uses_steam_shortcut(&g, &opts));
     }
 
     #[test]

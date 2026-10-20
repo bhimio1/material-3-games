@@ -3,7 +3,7 @@
 use crate::app::App;
 use crate::library::{Launch, Source};
 use crate::ui::widgets::{self, switch, ButtonKind};
-use crate::ui::{art, common, format_last_played, format_playtime, Action, Page};
+use crate::ui::{art, common, format_last_played, format_playtime, steamui, Action, Page, SteamJob};
 use egui::{pos2, vec2, Align2, Color32, CornerRadius, Mesh, Rect, RichText, Ui};
 use egui_material_icons::icons::*;
 
@@ -12,6 +12,40 @@ pub struct State {
     /// (game id, env text being edited)
     env: Option<(String, String)>,
     confirm_remove: bool,
+    pub extras: Option<steamui::Extras>,
+    steam: Option<SteamCfg>,
+}
+
+/// What Steam has stored for a Steam game, read when the page opens.
+struct SteamCfg {
+    game_id: String,
+    compat: String,
+    launch: String,
+    tools: Vec<crate::steam::appconfig::CompatTool>,
+}
+
+impl SteamCfg {
+    fn load(game_id: &str, appid: &str) -> SteamCfg {
+        use crate::steam::{account, appconfig};
+        let root = account::root(&crate::sys::paths::home());
+        let compat = root
+            .as_deref()
+            .and_then(|r| std::fs::read_to_string(appconfig::config_vdf(r)).ok())
+            .and_then(|t| appconfig::get_compat(&t, appid))
+            .unwrap_or_default();
+        let launch = root
+            .as_deref()
+            .and_then(account::user_dir)
+            .and_then(|u| std::fs::read_to_string(appconfig::localconfig(&u)).ok())
+            .map(|t| appconfig::get_launch_options(&t, appid))
+            .unwrap_or_default();
+        SteamCfg {
+            game_id: game_id.into(),
+            compat,
+            launch,
+            tools: root.as_deref().map(appconfig::list_tools).unwrap_or_default(),
+        }
+    }
 }
 
 /// Darken the bottom of the hero so text on it stays readable.
@@ -122,6 +156,27 @@ pub fn show(ui: &mut Ui, app: &mut App, id: &str) {
                 );
             });
 
+            steam_card(ui, app, &game, &mut opts, &mut changed, &mut actions);
+
+            // Achievements, guides, news, notes, screenshots.
+            common::card(ui, "", |ui| {
+                ui.add_space(8.0);
+                let extras = steamui::Extras::for_game(&mut app.pages.detail.extras, &game);
+                steamui::tabs(ui, extras, &game);
+                ui.add_space(4.0);
+                let outs = steamui::show(ui, extras, &game, &mut app.config, &mut app.thumbs, false);
+                for o in outs {
+                    actions.push(match o {
+                        steamui::Out::SaveConfig => Action::ConfigChanged,
+                        steamui::Out::OpenUrl(u) => Action::OpenUrl(u),
+                        steamui::Out::OpenPath(p) => Action::OpenPath(p),
+                    });
+                }
+                // Notes and pins edit the config directly.
+                opts = app.config.options(&game.id);
+                ui.add_space(8.0);
+            });
+
             let store = matches!(game.launch, Launch::Steam { .. } | Launch::Lutris { .. } | Launch::Heroic { .. });
             common::card(ui, "Launch options", |ui| {
                 if store {
@@ -207,4 +262,116 @@ pub fn show(ui: &mut Ui, app: &mut App, id: &str) {
         actions.push(Action::ConfigChanged);
     }
     app.actions.extend(actions);
+}
+
+/// Steam: Steam Input for any game, plus Proton / launch options / store
+/// actions for Steam games.
+fn steam_card(ui: &mut Ui, app: &mut App, game: &crate::library::Game, opts: &mut crate::config::GameOptions, changed: &mut bool, actions: &mut Vec<Action>) {
+    let steam_installed = crate::sys::cmd::exists("steam");
+    let Some(appid) = game.steam_appid().map(str::to_string) else {
+        // Non-Steam game: Steam Input through a shortcut.
+        common::card(ui, "Steam Input", |ui| {
+            common::row(
+                ui,
+                "Use Steam Input",
+                "Adds this game to Steam as a non-Steam shortcut and launches it through Steam, so your controller layouts, gyro and Steam's overlay work. Your options here still apply.",
+                |ui| {
+                    let mut on = opts.steam_input && game.shortcut_appid.is_some();
+                    if switch(ui, &mut on).changed() {
+                        opts.steam_input = on;
+                        *changed = true;
+                        let job = if on {
+                            SteamJob::Shortcuts { add: vec![game.id.clone()], remove: vec![] }
+                        } else {
+                            SteamJob::Shortcuts { add: vec![], remove: vec![game.id.clone()] }
+                        };
+                        actions.push(Action::Steam(job));
+                    }
+                },
+            );
+            if !steam_installed {
+                common::require(ui, actions, "steam", "steam", "Steam Input needs Steam.");
+            }
+            if let Some(sc) = game.shortcut_appid {
+                ui.separator();
+                common::row(ui, "Controller layout", "Open Steam's controller configurator for this shortcut.", |ui| {
+                    if widgets::button(ui, ButtonKind::Tonal, Some(ICON_SPORTS_ESPORTS), "Configure").clicked() {
+                        let _ = crate::steam::open(&crate::steam::url("controller", &crate::steam::shortcuts::rungameid(sc).to_string()));
+                    }
+                });
+            }
+        });
+        return;
+    };
+
+    let state = &mut app.pages.detail;
+    if state.steam.as_ref().is_none_or(|s| s.game_id != game.id) {
+        state.steam = Some(SteamCfg::load(&game.id, &appid));
+    }
+    let cfg = state.steam.as_mut().expect("loaded above");
+    common::card(ui, "Steam", |ui| {
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            let mut go = |ui: &mut Ui, icon, label: &str, action: &str| {
+                if widgets::button(ui, ButtonKind::Tonal, Some(icon), label).clicked() {
+                    if let Err(e) = crate::steam::open(&crate::steam::url(action, &appid)) {
+                        actions.push(Action::Toast(e, crate::ui::ToastKind::Error));
+                    }
+                }
+            };
+            if game.installed {
+                go(ui, ICON_SPORTS_ESPORTS, "Controller layout", "controller");
+                go(ui, ICON_VERIFIED, "Verify files", "validate");
+                go(ui, ICON_TUNE, "Properties", "properties");
+            } else {
+                go(ui, ICON_DOWNLOAD, "Install", "install");
+            }
+            go(ui, ICON_STOREFRONT, "Store", "store");
+            go(ui, ICON_FORUM, "Community", "hub");
+            if game.installed {
+                go(ui, ICON_DELETE, "Uninstall", "uninstall");
+            }
+        });
+        ui.add_space(8.0);
+        ui.separator();
+        // Compatibility tool.
+        common::row(ui, "Compatibility tool", "Proton version for this game. Saving restarts Steam if it's running.", |ui| {
+            let current = if cfg.compat.is_empty() { "Steam default".to_string() } else { cfg.tools.iter().find(|t| t.name == cfg.compat).map(|t| t.display.clone()).unwrap_or(cfg.compat.clone()) };
+            egui::ComboBox::from_id_salt(("compat", &game.id)).width(220.0).selected_text(current).show_ui(ui, |ui| {
+                let mut pick: Option<String> = None;
+                if ui.selectable_label(cfg.compat.is_empty(), "Steam default").clicked() {
+                    pick = Some(String::new());
+                }
+                for t in &cfg.tools {
+                    if ui.selectable_label(cfg.compat == t.name, &t.display).clicked() {
+                        pick = Some(t.name.clone());
+                    }
+                }
+                if let Some(tool) = pick.filter(|t| *t != cfg.compat) {
+                    cfg.compat = tool.clone();
+                    actions.push(Action::Steam(SteamJob::Compat { appid: appid.clone(), tool }));
+                }
+            });
+        });
+        ui.separator();
+        // Launch options with helper toggles.
+        common::row(ui, "Launch options", "Steam's launch options for this game. Helpers add the common ones around %command%.", |_| {});
+        ui.horizontal_wrapped(|ui| {
+            for (label, t) in crate::steam::appconfig::TOGGLES {
+                let on = crate::steam::appconfig::has_toggle(&cfg.launch, *t);
+                if widgets::filter_chip(ui, label, on, None).clicked() {
+                    cfg.launch = crate::steam::appconfig::set_toggle(&cfg.launch, *t, !on);
+                }
+            }
+        });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut cfg.launch).hint_text("%command%").desired_width(ui.available_width() - 110.0).font(egui::TextStyle::Monospace));
+            if widgets::button(ui, ButtonKind::Filled, Some(ICON_SAVE), "Save").clicked() {
+                actions.push(Action::Steam(SteamJob::LaunchOptions { appid: appid.clone(), options: cfg.launch.clone() }));
+            }
+        });
+        ui.add_space(8.0);
+    });
+    let _ = changed;
 }

@@ -62,16 +62,28 @@ pub fn take_error() -> Option<String> {
     Some(text.trim().to_string()).filter(|t| !t.is_empty())
 }
 
-#[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, serde::Deserialize)]
 pub struct Running {
     pub id: String,
     pub name: String,
     pub pid: u32,
+    /// Unix seconds the game was started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started: Option<i64>,
+    /// gamescope app id (Game Mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamescope_appid: Option<u32>,
+    /// systemd scope the game runs in (Game Mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
 }
 
 pub fn write_running(id: &str, name: &str, pid: u32) {
-    let r = Running { id: id.into(), name: name.into(), pid };
-    let _ = crate::library::write_atomic(&runtime_dir().join("running.json"), &serde_json::to_string(&r).unwrap_or_default());
+    write_running_full(&Running { id: id.into(), name: name.into(), pid, started: Some(crate::launch::now()), ..Default::default() });
+}
+
+pub fn write_running_full(r: &Running) {
+    let _ = crate::library::write_atomic(&runtime_dir().join("running.json"), &serde_json::to_string(r).unwrap_or_default());
 }
 
 pub fn clear_running(id: &str) {
@@ -79,6 +91,10 @@ pub fn clear_running(id: &str) {
     if read_running_at(&path).is_some_and(|r| r.id == id) {
         let _ = std::fs::remove_file(path);
     }
+}
+
+pub fn read_running() -> Option<Running> {
+    read_running_at(&runtime_dir().join("running.json"))
 }
 
 fn read_running_at(path: &Path) -> Option<Running> {
@@ -159,12 +175,37 @@ pub enum Entered {
     Nested,
 }
 
+/// gamescope arguments for Game Mode: the user's settings plus Steam
+/// integration (`-e`, which enables our overlay and focus control) and the
+/// MangoHud performance overlay when mangoapp is installed.
+pub fn game_mode_args(config: &Config, display: Option<(u32, u32, u32)>, mangoapp: bool) -> Vec<String> {
+    let mut args = config.gamescope.args(display);
+    if !args.iter().any(|a| a == "-e" || a == "--steam") {
+        args.insert(0, "-e".into());
+    }
+    if mangoapp && !args.iter().any(|a| a == "--mangoapp") {
+        args.push("--mangoapp".into());
+    }
+    args
+}
+
+/// The MangoHud config file gamescope's mangoapp watches; starts hidden.
+pub fn prepare_mangohud() -> std::path::PathBuf {
+    let path = crate::gamescope::mangohud_config_path();
+    let _ = crate::library::write_atomic(&path, crate::gamescope::mangohud_config(0));
+    path
+}
+
 /// Enter Game Mode. In the m3-session login session this closes all apps
 /// and leaves Hyprland so gamescope gets the GPU to itself; otherwise
 /// gamescope runs fullscreen inside Hyprland.
 pub fn enter(config: &Config) -> Result<Entered, String> {
     let display = if hypr::running() { hypr::focused_monitor() } else { None };
-    let args = config.gamescope.args(display);
+    let mangoapp = cmd::exists("mangoapp");
+    let args = game_mode_args(config, display, mangoapp);
+    if mangoapp {
+        prepare_mangohud();
+    }
     if session_ready() && hypr::running() {
         write_flag(&runtime_dir(), &args).map_err(|e| e.to_string())?;
         close_windows(Duration::from_secs(5));
@@ -175,15 +216,23 @@ pub fn enter(config: &Config) -> Result<Entered, String> {
         return Err("gamescope isn't installed (pacman -S gamescope).".into());
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mut all: Vec<String> = args;
-    all.push("--".into());
-    all.push(exe.to_string_lossy().into_owned());
-    all.push("--big-picture".into());
-    let refs: Vec<&str> = all.iter().map(String::as_str).collect();
     if hypr::running() && config.performance_mode {
         let _ = hypr::performance_mode_on(hypr::current_syntax());
     }
-    cmd::spawn_detached("gamescope", &refs)?;
+    use std::os::unix::process::CommandExt;
+    let mut cmd = std::process::Command::new("gamescope");
+    cmd.args(&args)
+        .arg("--")
+        .arg(&exe)
+        .arg("--big-picture")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0);
+    if mangoapp {
+        cmd.env("MANGOHUD_CONFIGFILE", crate::gamescope::mangohud_config_path());
+    }
+    cmd.spawn().map_err(|e| format!("gamescope: {e}"))?;
     Ok(Entered::Nested)
 }
 
@@ -233,6 +282,21 @@ mod tests {
     }
 
     #[test]
+    fn game_mode_arguments() {
+        let c = Config::default();
+        let a = game_mode_args(&c, Some((1920, 1080, 60)), true);
+        assert_eq!(a[0], "-e");
+        assert!(a.contains(&"--mangoapp".to_string()));
+        assert!(a.contains(&"-W".to_string()));
+        let mut c2 = Config::default();
+        c2.gamescope.extra = "--steam --mangoapp".into();
+        let a = game_mode_args(&c2, None, true);
+        assert!(!a.contains(&"-e".to_string()));
+        assert_eq!(a.iter().filter(|x| *x == "--mangoapp").count(), 1);
+        assert!(!game_mode_args(&c, None, false).contains(&"--mangoapp".to_string()));
+    }
+
+    #[test]
     fn running_file_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("running.json");
@@ -244,7 +308,7 @@ mod tests {
 
     #[test]
     fn status_json_shape() {
-        let s = Status { game_mode: false, session_ready: true, running_game: Some(Running { id: "a".into(), name: "A".into(), pid: 3 }) };
+        let s = Status { game_mode: false, session_ready: true, running_game: Some(Running { id: "a".into(), name: "A".into(), pid: 3, ..Default::default() }) };
         let v: serde_json::Value = serde_json::to_value(&s).unwrap();
         assert_eq!(v, serde_json::json!({"game_mode": false, "session_ready": true, "running_game": {"id": "a", "name": "A", "pid": 3}}));
     }

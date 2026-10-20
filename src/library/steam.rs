@@ -171,6 +171,7 @@ pub fn scan(home: &Path) -> Vec<Game> {
                     last_played: last.max(m.last_played),
                     playtime_minutes: play,
                     installed: m.installed,
+                    shortcut_appid: None,
                     install_dir: m.install_dir.as_ref().map(|d| steamapps.join("common").join(d)),
                     launch: Launch::Steam { appid: m.appid.clone() },
                     name: m.name,

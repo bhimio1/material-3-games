@@ -52,6 +52,7 @@ impl Value {
         }
     }
 
+    #[cfg(test)]
     pub fn path(&self, keys: &[&str]) -> Option<&Value> {
         keys.iter().try_fold(self, |v, k| v.get(k))
     }

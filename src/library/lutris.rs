@@ -137,6 +137,7 @@ pub fn scan(home: &Path) -> Vec<Game> {
                 last_played: r.last_played,
                 playtime_minutes: r.playtime_hours.map(|h| (h * 60.0).round() as u64).filter(|m| *m > 0),
                 installed: r.installed,
+                shortcut_appid: None,
                 install_dir: r.directory.as_ref().map(PathBuf::from),
                 launch: Launch::Lutris { id: r.id },
                 name: r.name,

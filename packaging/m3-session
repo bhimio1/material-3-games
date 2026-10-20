@@ -3,8 +3,9 @@
 #
 # Runs Hyprland. When Hyprland exits because Game Mode was requested
 # (m3-games wrote "game-mode" to $XDG_RUNTIME_DIR/m3-games/next), runs
-# gamescope directly on the GPU with the big-picture UI, then starts
-# Hyprland again when gamescope exits. A normal logout ends the loop.
+# gamescope directly on the GPU with the big-picture UI (with Steam
+# integration, -e, so the quick overlay and focus switching work), then
+# starts Hyprland again when gamescope exits. A normal logout ends the loop.
 set -u
 
 export M3_SESSION=1
@@ -41,8 +42,26 @@ while true; do
     fi
     [ "${#args[@]}" -gt 0 ] || args=(-f)
 
+    # Steam integration (-e) is what lets m3-games' overlay sit on top of
+    # games and switch focus; older args files may lack it.
+    case " ${args[*]} " in
+        *" -e "* | *" --steam "*) ;;
+        *) args=(-e "${args[@]}") ;;
+    esac
+    # mangoapp (from MangoHud) shows the performance overlay; the Game Mode
+    # overlay switches its level by rewriting this file.
+    if command -v mangoapp >/dev/null 2>&1; then
+        export MANGOHUD_CONFIGFILE="$RUN/mangohud.conf"
+        [ -f "$MANGOHUD_CONFIGFILE" ] || echo "no_display" > "$MANGOHUD_CONFIGFILE"
+        case " ${args[*]} " in
+            *" --mangoapp "*) ;;
+            *) args+=(--mangoapp) ;;
+        esac
+    fi
+
     started=$(date +%s)
     gamescope "${args[@]}" -- "$(m3_games)" --big-picture > "$RUN/gamescope.log" 2>&1
+    unset MANGOHUD_CONFIGFILE
     status=$?
     # A gamescope that dies right away usually couldn't get the GPU; say so
     # in Hyprland instead of looping.

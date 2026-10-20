@@ -6,7 +6,7 @@
 enum Tok {
     /// Quoted or bare string: (start, end) of the whole token, decoded text.
     Str(usize, usize, String),
-    Open(usize),
+    Open,
     Close(usize),
 }
 
@@ -37,7 +37,7 @@ fn tokenize(text: &str) -> Vec<Tok> {
                 out.push(Tok::Str(start, i, String::from_utf8_lossy(&s).into_owned()));
             }
             b'{' => {
-                out.push(Tok::Open(i));
+                out.push(Tok::Open);
                 i += 1;
             }
             b'}' => {
@@ -82,7 +82,7 @@ fn build(toks: &[Tok], pos: &mut usize, end_of_text: usize) -> (Vec<Node>, usize
                 *pos += 1;
                 return (nodes, *at);
             }
-            Tok::Open(_) => {
+            Tok::Open => {
                 *pos += 1;
                 build(toks, pos, end_of_text);
             }
@@ -94,7 +94,7 @@ fn build(toks: &[Tok], pos: &mut usize, end_of_text: usize) -> (Vec<Node>, usize
                         nodes.push(Node { key, val: Val::Str(*s, *e) });
                         *pos += 1;
                     }
-                    Some(Tok::Open(_)) => {
+                    Some(Tok::Open) => {
                         *pos += 1;
                         let (children, close) = build(toks, pos, end_of_text);
                         nodes.push(Node { key, val: Val::Block { close, children } });

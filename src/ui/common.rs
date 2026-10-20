@@ -4,7 +4,7 @@
 use super::widgets::{self, ButtonKind};
 use super::{Action, Actions};
 use crate::theme::M3Palette;
-use egui::{vec2, Align2, Color32, CornerRadius, Frame, Id, Margin, RichText, Sense, Ui};
+use egui::{pos2, vec2, Align2, Color32, CornerRadius, Frame, Id, Margin, RichText, Sense, Ui, UiBuilder};
 use egui_material_icons::{icons::*, MaterialIcon};
 
 /// Widest the page content gets.
@@ -268,4 +268,64 @@ pub fn empty_hint(ui: &mut Ui, text: &str) {
         egui::FontId::proportional(13.0),
         p.on_surface_variant,
     );
+}
+
+/// A list row: leading icon in a tonal circle, title and subtitle, and
+/// trailing controls. The whole row is clickable.
+pub fn list_row(
+    ui: &mut Ui,
+    icon: MaterialIcon,
+    active: bool,
+    title: &str,
+    subtitle: &str,
+    trailing: impl FnOnce(&mut Ui),
+) -> egui::Response {
+    let p = widgets::palette(ui);
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 58.0), Sense::click());
+    if response.hovered() {
+        let alpha = if response.is_pointer_button_down_on() { 0.10 } else { 0.06 };
+        ui.painter().rect_filled(
+            rect.expand2(vec2(8.0, 0.0)),
+            CornerRadius::same(14),
+            p.on_surface.gamma_multiply(alpha),
+        );
+    }
+    let (circle, fg) = if active {
+        (p.primary_container, p.on_primary_container)
+    } else {
+        (p.surface_container_highest, p.on_surface_variant)
+    };
+    let c = pos2(rect.left() + 20.0, rect.center().y);
+    ui.painter().circle_filled(c, 20.0, circle);
+    widgets::paint_icon(ui, icon, c, 22.0, fg);
+
+    let mut child = ui.new_child(
+        UiBuilder::new()
+            .max_rect(rect.shrink2(vec2(0.0, 4.0)))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    trailing(&mut child);
+    let trailing_w = child.min_rect().width();
+
+    let text_left = rect.left() + 54.0;
+    let max_w = (rect.right() - trailing_w - 16.0 - text_left).max(40.0);
+    let title_g = widgets::truncated_galley(ui, title, widgets::title_font(14.5), p.on_surface, max_w);
+    let (ty, sy) = if subtitle.is_empty() {
+        (rect.center().y - title_g.size().y / 2.0, 0.0)
+    } else {
+        (rect.center().y - title_g.size().y - 1.0, rect.center().y + 1.0)
+    };
+    ui.painter().galley(pos2(text_left, ty), title_g, p.on_surface);
+    if !subtitle.is_empty() {
+        let sub = widgets::truncated_galley(
+            ui,
+            subtitle,
+            egui::FontId::proportional(12.5),
+            if active { p.primary } else { p.on_surface_variant },
+            max_w,
+        );
+        ui.painter().galley(pos2(text_left, sy), sub, p.on_surface_variant);
+    }
+    response
 }

@@ -260,7 +260,7 @@ fn walk(node: ego_tree::NodeRef<Node>, b: &mut Builder, style: Style, link: Opti
             Node::Text(t) => b.push_text(&t.text, style, link),
             Node::Element(e) => {
                 let el = ElementRef::wrap(child).expect("element node");
-                if let Some(level) = heading_level(&e) {
+                if let Some(level) = heading_level(e) {
                     b.flush();
                     let t = text_of(el);
                     if !t.is_empty() {
@@ -357,6 +357,7 @@ pub fn parse_guide(html: &str) -> Guide {
 }
 
 /// Plain-text version of a span list.
+#[cfg(test)]
 pub fn plain(spans: &[Span]) -> String {
     spans.iter().map(|s| s.text.as_str()).collect()
 }

@@ -37,6 +37,14 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     .map(|s| (s, app.games.iter().filter(|g| g.source == s).count()))
     .collect();
     let count = |s| counts.iter().find(|(x, _)| *x == s).map(|(_, n)| *n).unwrap_or(0);
+    // Non-Steam games that could get a Steam shortcut, and those that have one.
+    let shortcut_candidates: Vec<String> = app
+        .games
+        .iter()
+        .filter(|g| g.steam_appid().is_none() && g.installed && g.shortcut_appid.is_none())
+        .map(|g| g.id.clone())
+        .collect();
+    let with_shortcuts: Vec<String> = app.games.iter().filter(|g| g.shortcut_appid.is_some()).map(|g| g.id.clone()).collect();
     let config = &mut app.config;
     let st = &mut app.pages.settings;
     let mut actions = Vec::new();
@@ -67,6 +75,65 @@ pub fn show(ui: &mut Ui, app: &mut App) {
                     ui.separator();
                 }
             }
+        });
+
+        card(ui, "Steam", |ui| {
+            row(
+                ui,
+                "Steam Input for all games",
+                &format!(
+                    "Add your non-Steam games to Steam as shortcuts and launch them through Steam, so controller layouts and Steam's overlay work everywhere. {} can be added, {} already are.",
+                    shortcut_candidates.len(),
+                    with_shortcuts.len()
+                ),
+                |ui| {
+                    if !with_shortcuts.is_empty() && widgets::button(ui, ButtonKind::Text, None, "Remove all").clicked() {
+                        for id in &with_shortcuts {
+                            config.games.entry(id.clone()).or_default().steam_input = false;
+                        }
+                        changed = true;
+                        actions.push(Action::Steam(crate::ui::SteamJob::Shortcuts { add: vec![], remove: with_shortcuts.clone() }));
+                    }
+                    if widgets::button_enabled(ui, ButtonKind::Tonal, Some(ICON_ADD), "Add all", !shortcut_candidates.is_empty()).clicked() {
+                        for id in &shortcut_candidates {
+                            config.games.entry(id.clone()).or_default().steam_input = true;
+                        }
+                        changed = true;
+                        actions.push(Action::Steam(crate::ui::SteamJob::Shortcuts { add: shortcut_candidates.clone(), remove: vec![] }));
+                    }
+                },
+            );
+            ui.separator();
+            row(ui, "Controller settings", "Steam Input layouts for the desktop and big picture, in Steam.", |ui| {
+                if widgets::button(ui, ButtonKind::Tonal, Some(ICON_SPORTS_ESPORTS), "Open in Steam").clicked() {
+                    let _ = crate::steam::open("steam://open/settings/controller");
+                }
+            });
+            ui.separator();
+            row(ui, "Steam Web API key", "Optional. Exact achievements and your games that aren't installed. Get a key at steamcommunity.com/dev/apikey.", |ui| {
+                if widgets::icon_button(ui, ICON_OPEN_IN_NEW, "Get a key", true).clicked() {
+                    actions.push(Action::OpenUrl("https://steamcommunity.com/dev/apikey".into()));
+                }
+                let r = ui.add(egui::TextEdit::singleline(&mut config.steam_api_key).password(true).desired_width(240.0).hint_text("optional"));
+                if r.lost_focus() {
+                    changed = true;
+                }
+            });
+            ui.separator();
+            let detected = if config.steam_id.trim().is_empty() { config.steamid64() } else { String::new() };
+            row(ui, "SteamID64", if detected.is_empty() { "Your 17-digit Steam ID, for the Web API." } else { "Detected from your last Steam login. Set it to use another account." }, |ui| {
+                let r = ui.add(egui::TextEdit::singleline(&mut config.steam_id).desired_width(240.0).hint_text(if detected.is_empty() { "7656119…".to_string() } else { detected.clone() }));
+                if r.lost_focus() {
+                    changed = true;
+                }
+            });
+            ui.separator();
+            row(ui, "Show games that aren't installed", "List every game you own on Steam (needs the Web API key), with an Install button.", |ui| {
+                if switch(ui, &mut config.show_uninstalled).changed() {
+                    changed = true;
+                    rescan = true;
+                }
+            });
         });
 
         card(ui, "Cover art", |ui| {

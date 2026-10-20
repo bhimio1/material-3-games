@@ -30,3 +30,14 @@ mod tests {
         assert_eq!(tilde(Path::new("/etc/x")), "/etc/x");
     }
 }
+
+/// Expand a leading `~`.
+pub fn expand(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        return home().join(rest);
+    }
+    if path == "~" {
+        return home();
+    }
+    PathBuf::from(path)
+}

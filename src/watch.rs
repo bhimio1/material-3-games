@@ -31,7 +31,7 @@ fn ours(pid: u32, launched: u32, tree: &HashSet<u32>) -> bool {
 
 pub fn run(id: &str, launched: u32, started: i64) {
     let mut config = Config::load();
-    let games = library::scan(&crate::sys::paths::home(), config.enabled());
+    let games = library::scan(&crate::sys::paths::home(), config.enabled_local());
     let Some(game) = games.into_iter().find(|g| g.id == id) else {
         return;
     };
@@ -51,6 +51,12 @@ pub fn run(id: &str, launched: u32, started: i64) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut reader = BufReader::new(stream);
     let hint = game.class_hint();
+    // Launched through its Steam shortcut: Steam gives the game's processes
+    // SteamGameId=<rungameid>, which identifies its windows.
+    let steam_gid = game
+        .shortcut_appid
+        .filter(|_| crate::launch::uses_steam_shortcut(&game, &opts))
+        .map(|a| crate::steam::shortcuts::rungameid(a).to_string());
     let command_game = matches!(game.launch, Launch::Command { .. } | Launch::Manual(_));
     let syntax = hypr::current_syntax();
     let begin = Instant::now();
@@ -72,7 +78,11 @@ pub fn run(id: &str, launched: u32, started: i64) {
             Event::OpenWindow { address, class, .. } if tracked.is_none() => {
                 let tree = hypr::process_tree(launched);
                 let pid = hypr::clients().into_iter().find(|c| c.address == address).map(|c| c.pid).unwrap_or(0);
-                let matched = hypr::is_game_window(&class, pid, hint.as_deref(), |p| ours(p, launched, &tree))
+                let by_env = steam_gid.as_deref().is_some_and(|gid| {
+                    pid != 0 && !hypr::is_launcher_class(&class) && crate::procenv::env_var(pid, "SteamGameId").as_deref() == Some(gid)
+                });
+                let matched = by_env
+                    || hypr::is_game_window(&class, pid, hint.as_deref(), |p| ours(p, launched, &tree))
                     // Last resort for games we run directly, when the launcher
                     // already exited: the first new window soon after launch.
                     || (hint.is_none()
@@ -119,7 +129,7 @@ pub fn run(id: &str, launched: u32, started: i64) {
         }
     }
     session::clear_running(id);
-    let mut games = library::scan(&crate::sys::paths::home(), config.enabled());
+    let mut games = library::scan(&crate::sys::paths::home(), config.enabled_local());
     crate::covers::apply_cached(&mut games);
     library::write_cache(&games);
 }

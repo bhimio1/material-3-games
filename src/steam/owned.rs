@@ -43,6 +43,7 @@ pub fn parse(json: &str) -> Vec<Game> {
                     last_played: (g.rtime_last_played > 0).then_some(g.rtime_last_played),
                     playtime_minutes: (g.playtime_forever > 0).then_some(g.playtime_forever),
                     installed: false,
+                    shortcut_appid: None,
                     install_dir: None,
                     launch: Launch::Steam { appid: g.appid.to_string() },
                 })
