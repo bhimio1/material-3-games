@@ -149,8 +149,10 @@ fn hero_card(ui: &mut Ui, app: &mut App, game: &Game, size: egui::Vec2, focused:
             egui::FontId::proportional(13.0),
             Color32::from_white_alpha(210),
         );
-        if focused || resp.hovered() {
+        if focused {
             ui.painter().rect_stroke(rect.expand(4.0), CornerRadius::same(24), Stroke::new(4.0, p.primary), StrokeKind::Outside);
+        } else if resp.hovered() {
+            ui.painter().rect_stroke(rect.expand(3.0), CornerRadius::same(23), Stroke::new(2.0, p.outline), StrokeKind::Outside);
         }
     }
     resp
@@ -327,13 +329,16 @@ pub fn show(ui: &mut Ui, app: &mut App) {
                 ui.add_space(12.0);
                 let size = vec2((width * 0.42).clamp(360.0, 640.0), (width * 0.42).clamp(360.0, 640.0) * 0.47);
                 egui::ScrollArea::horizontal().id_salt("recent").show(ui, |ui| {
+                    // Room for the focus ring, which the scroll area would clip.
+                    ui.add_space(10.0);
                     ui.horizontal(|ui| {
+                        ui.add_space(10.0);
                         ui.spacing_mut().item_spacing.x = gap;
                         for (i, g) in recent.iter().enumerate() {
                             let focused = st.row == 0 && st.col == i && st.overlay == Overlay::None;
                             let r = hero_card(ui, app, g, size, focused);
                             if focused && st.scroll_to_focus {
-                                r.scroll_to_me(Some(egui::Align::Center));
+                                r.scroll_to_me(None);
                             }
                             if r.clicked() {
                                 st.row = 0;
@@ -356,7 +361,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
                         let focused = st.row == r + grid_row_offset && st.col == c && st.overlay == Overlay::None;
                         let (resp, play) = cover_card(ui, &mut app.thumbs, g, tile_w, focused);
                         if focused && st.scroll_to_focus {
-                            resp.scroll_to_me(Some(egui::Align::Center));
+                            resp.scroll_to_me(None);
                         }
                         if play || resp.clicked() {
                             st.row = r + grid_row_offset;

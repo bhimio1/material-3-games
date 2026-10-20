@@ -92,10 +92,10 @@ pub fn show(ui: &mut Ui, app: &mut App) {
         card(ui, "Hyprland", |ui| {
             let syntax = match target.syntax {
                 hypr::Syntax::Lua => "Lua config",
-                hypr::Syntax::Conf => "hyprland.conf (0.53+ rule syntax)",
+                hypr::Syntax::Conf => "hyprlang, 0.53+ rule syntax",
             };
             let desc = format!(
-                "Allows tearing and turns off idle, animations, blur and shadows for Steam games, gamescope, .exe windows and games launched here. Written to {} ({syntax}).",
+                "Allows tearing and turns off idle, animations, blur and shadows for Steam games, gamescope, .exe windows and games launched here. Written to {} as {syntax}.",
                 paths::tilde(&target.path)
             );
             row(ui, "Game window rules", &desc, |ui| {

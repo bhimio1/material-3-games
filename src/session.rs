@@ -203,7 +203,11 @@ pub fn exit() -> Result<(), String> {
 /// Install the login session with one pkexec prompt: the session entry and
 /// the `m3-session` script (needed when m3-games itself lives in ~/.local).
 pub fn install_session() -> Result<(), String> {
-    let script = r#"set -e
+    cmd::run("pkexec", &["sh", "-c", &install_script()]).map(|_| ())
+}
+
+fn install_script() -> String {
+    r#"set -e
 install -Dm755 /dev/stdin /usr/local/bin/m3-session.new <<'M3_SESSION_EOF'
 __SCRIPT__M3_SESSION_EOF
 mv /usr/local/bin/m3-session.new /usr/local/bin/m3-session
@@ -212,8 +216,7 @@ cat > /usr/share/wayland-sessions/m3-games-session.desktop <<'M3_DESKTOP_EOF'
 __DESKTOP__M3_DESKTOP_EOF
 "#
     .replace("__SCRIPT__", SESSION_SCRIPT)
-    .replace("__DESKTOP__", SESSION_DESKTOP);
-    cmd::run("pkexec", &["sh", "-c", &script]).map(|_| ())
+    .replace("__DESKTOP__", SESSION_DESKTOP)
 }
 
 #[cfg(test)]
@@ -244,6 +247,14 @@ mod tests {
         let s = Status { game_mode: false, session_ready: true, running_game: Some(Running { id: "a".into(), name: "A".into(), pid: 3 }) };
         let v: serde_json::Value = serde_json::to_value(&s).unwrap();
         assert_eq!(v, serde_json::json!({"game_mode": false, "session_ready": true, "running_game": {"id": "a", "name": "A", "pid": 3}}));
+    }
+
+    #[test]
+    fn install_script_parses() {
+        let script = install_script();
+        assert!(script.contains("M3_SESSION_EOF\nmv "));
+        let out = std::process::Command::new("sh").args(["-n", "-c", &script]).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     }
 
     #[test]

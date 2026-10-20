@@ -1,0 +1,35 @@
+# Maintainer: bhimio1
+# Template: the release workflow fills in @PKGVER@ and @SHA256@ and publishes
+# this to the AUR as material-3-games-bin.
+pkgname=material-3-games-bin
+pkgver=@PKGVER@
+pkgrel=1
+pkgdesc="Material 3 game manager with a gamescope Game Mode for Hyprland"
+arch=('x86_64')
+url="https://github.com/bhimio1/material-3-games"
+license=('MIT')
+depends=('libxkbcommon' 'wayland' 'libglvnd' 'systemd-libs' 'xdg-utils')
+optdepends=(
+  'gamescope: Game Mode and per-game gamescope'
+  'hyprland: fullscreen handling and game window rules'
+  'steam: Steam games'
+  'lutris: Lutris games'
+  'umu-launcher: run Windows games added by hand with Proton'
+  'gamemode: GameMode optimisations (gamemoderun)'
+  'mangohud: performance overlay'
+  'libpulse: volume control in Game Mode (pactl)'
+)
+provides=('material-3-games')
+conflicts=('material-3-games' 'material-3-games-git')
+source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/m3-games-x86_64-linux.tar.gz")
+sha256sums=('@SHA256@')
+
+package() {
+  cd "m3-games-x86_64-linux"
+  install -Dm755 m3-games "$pkgdir/usr/bin/m3-games"
+  install -Dm755 m3-session "$pkgdir/usr/bin/m3-session"
+  install -Dm644 material_3_games.desktop "$pkgdir/usr/share/applications/material_3_games.desktop"
+  install -Dm644 m3-games-session.desktop "$pkgdir/usr/share/wayland-sessions/m3-games-session.desktop"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 LICENSE-Inter.txt "$pkgdir/usr/share/licenses/$pkgname/LICENSE-Inter.txt"
+}

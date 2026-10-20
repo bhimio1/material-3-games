@@ -1,0 +1,58 @@
+# Maintainer: bhimio1
+pkgname=material-3-games-git
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Material 3 game manager with a gamescope Game Mode for Hyprland"
+arch=('x86_64' 'aarch64')
+url="https://github.com/bhimio1/material-3-games"
+license=('MIT')
+depends=('libxkbcommon' 'wayland' 'libglvnd' 'systemd-libs' 'xdg-utils')
+makedepends=('cargo' 'git')
+optdepends=(
+  'gamescope: Game Mode and per-game gamescope'
+  'hyprland: fullscreen handling and game window rules'
+  'steam: Steam games'
+  'lutris: Lutris games'
+  'umu-launcher: run Windows games added by hand with Proton'
+  'gamemode: GameMode optimisations (gamemoderun)'
+  'mangohud: performance overlay'
+  'libpulse: volume control in Game Mode (pactl)'
+)
+provides=('material-3-games')
+conflicts=('material-3-games' 'material-3-games-bin')
+source=("$pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$pkgname"
+  printf "0.1.0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen
+}
+
+package() {
+  cd "$pkgname"
+  install -Dm755 target/release/m3-games "$pkgdir/usr/bin/m3-games"
+  install -Dm755 packaging/m3-session "$pkgdir/usr/bin/m3-session"
+  install -Dm644 packaging/material_3_games.desktop "$pkgdir/usr/share/applications/material_3_games.desktop"
+  install -Dm644 packaging/m3-games-session.desktop "$pkgdir/usr/share/wayland-sessions/m3-games-session.desktop"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 assets/fonts/LICENSE-Inter.txt "$pkgdir/usr/share/licenses/$pkgname/LICENSE-Inter.txt"
+}
