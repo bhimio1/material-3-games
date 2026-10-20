@@ -45,9 +45,50 @@ pub fn valve_proton_name(folder: &str) -> Option<String> {
     Some(if n >= 5 { format!("proton_{n}") } else { format!("proton_{major}{minor}") })
 }
 
+/// System-wide compatibility tool folders (distribution packages such as
+/// CachyOS's `proton-cachyos` install here).
+pub const SYSTEM_TOOL_DIRS: [&str; 2] =
+    ["/usr/share/steam/compatibilitytools.d", "/usr/local/share/steam/compatibilitytools.d"];
+
+/// A friendlier label for tools whose `display_name` is a bare package
+/// name: `proton-cachyos` → "Proton-CachyOS", `proton-cachyos-slr` →
+/// "Proton-CachyOS (SLR)".
+pub fn friendly_tool_name(name: &str, display: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("proton-cachyos") {
+        return if lower.contains("slr") {
+            "Proton-CachyOS (SLR)".into()
+        } else {
+            "Proton-CachyOS".into()
+        };
+    }
+    display.to_string()
+}
+
+/// A tool in a compatibilitytools.d folder. Packages without a
+/// compatibilitytool.vdf fall back to the folder name, which Steam
+/// also uses as the internal name.
+fn custom_tool(dir: &Path) -> Option<CompatTool> {
+    let (name, display) = match compat_tool_vdf_name(dir) {
+        Some(v) => v,
+        None if dir.join("proton").is_file() => {
+            let f = dir.file_name()?.to_string_lossy().into_owned();
+            (f.clone(), f)
+        }
+        None => return None,
+    };
+    let display = friendly_tool_name(&name, &display);
+    Some(CompatTool { name, display })
+}
+
 /// Installed compatibility tools: Valve's Proton builds in steamapps and
-/// custom ones (GE-Proton, …) in compatibilitytools.d.
+/// custom ones (GE-Proton, Proton-CachyOS, …) in compatibilitytools.d.
 pub fn list_tools(root: &Path) -> Vec<CompatTool> {
+    let system: Vec<PathBuf> = SYSTEM_TOOL_DIRS.iter().map(PathBuf::from).collect();
+    list_tools_in(root, &system)
+}
+
+pub fn list_tools_in(root: &Path, system_dirs: &[PathBuf]) -> Vec<CompatTool> {
     let mut out: Vec<CompatTool> = Vec::new();
     for lib in crate::library::steam::library_folders(root) {
         if let Ok(rd) = std::fs::read_dir(lib.join("steamapps/common")) {
@@ -59,23 +100,38 @@ pub fn list_tools(root: &Path) -> Vec<CompatTool> {
             }
         }
     }
-    let custom: Vec<PathBuf> = vec![
-        root.join("compatibilitytools.d"),
-        PathBuf::from("/usr/share/steam/compatibilitytools.d"),
-        PathBuf::from("/usr/local/share/steam/compatibilitytools.d"),
-    ];
+    let mut custom = vec![root.join("compatibilitytools.d")];
+    custom.extend(system_dirs.iter().cloned());
     for dir in custom {
         if let Ok(rd) = std::fs::read_dir(dir) {
             for e in rd.flatten() {
-                if let Some((name, display)) = compat_tool_vdf_name(&e.path()) {
-                    out.push(CompatTool { name, display });
-                }
+                out.extend(custom_tool(&e.path()));
             }
         }
     }
     out.sort_by(|a, b| b.display.cmp(&a.display));
-    out.dedup_by(|a, b| a.name == b.name);
+    // Sorting by label can separate duplicates; keep the first of each name.
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|t| seen.insert(t.name.clone()));
     out
+}
+
+/// `PROTONPATH` for umu-launched games when the user hasn't picked one:
+/// the distribution's Proton-CachyOS when installed, else GE-Proton
+/// (which umu downloads on demand).
+pub fn default_proton() -> String {
+    let system: Vec<PathBuf> = SYSTEM_TOOL_DIRS.iter().map(PathBuf::from).collect();
+    default_proton_in(&system)
+}
+
+pub fn default_proton_in(system_dirs: &[PathBuf]) -> String {
+    for dir in system_dirs {
+        let p = dir.join("proton-cachyos");
+        if p.join("proton").is_file() {
+            return p.to_string_lossy().into_owned();
+        }
+    }
+    "GE-Proton".into()
 }
 
 pub fn config_vdf(root: &Path) -> PathBuf {
@@ -144,7 +200,19 @@ pub const TOGGLES: &[(&str, Toggle)] = &[
     ("NTSync (Proton)", Toggle::Env("PROTON_USE_NTSYNC=1")),
     ("FSR upscaling (Proton GE)", Toggle::Env("WINE_FULLSCREEN_FSR=1")),
     ("Show FPS (DXVK HUD)", Toggle::Env("DXVK_HUD=fps")),
+    ("CachyOS performance profile", Toggle::Wrapper(GAME_PERFORMANCE)),
 ];
+
+/// CachyOS's wrapper (cachyos-settings) that switches the power profile
+/// to performance while the game runs.
+pub const GAME_PERFORMANCE: &str = "game-performance";
+
+/// Toggles that make sense on this system: the CachyOS wrapper only when
+/// it's installed.
+pub fn available_toggles() -> impl Iterator<Item = &'static (&'static str, Toggle)> {
+    let perf = crate::sys::cmd::exists(GAME_PERFORMANCE);
+    TOGGLES.iter().filter(move |(_, t)| perf || *t != Toggle::Wrapper(GAME_PERFORMANCE))
+}
 
 fn split_command(opts: &str) -> (Vec<String>, Vec<String>) {
     match opts.split_once("%command%") {
@@ -237,6 +305,46 @@ mod tests {
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"proton_9"));
         assert!(names.contains(&"GE-Proton9-20"));
+    }
+
+    #[test]
+    fn system_tools_listing() {
+        let root = tempfile::tempdir().unwrap();
+        let sys = tempfile::tempdir().unwrap();
+        for (folder, display) in [("proton-cachyos", "proton-cachyos-10.0-20250714"), ("proton-cachyos-slr", "proton-cachyos-10.0-20250714-slr")] {
+            let d = sys.path().join(folder);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("proton"), "").unwrap();
+            std::fs::write(
+                d.join("compatibilitytool.vdf"),
+                format!(r#""compatibilitytools" {{ "compat_tools" {{ "{folder}" {{ "install_path" "." "display_name" "{display}" }} }} }}"#),
+            )
+            .unwrap();
+        }
+        // A packaged tool without a vdf is still found by its folder.
+        let bare = sys.path().join("proton-ge-custom");
+        std::fs::create_dir_all(&bare).unwrap();
+        std::fs::write(bare.join("proton"), "").unwrap();
+        std::fs::create_dir_all(sys.path().join("not-a-tool")).unwrap();
+        let tools = list_tools_in(root.path(), &[sys.path().to_path_buf()]);
+        let find = |n: &str| tools.iter().find(|t| t.name == n).map(|t| t.display.clone());
+        assert_eq!(find("proton-cachyos").as_deref(), Some("Proton-CachyOS"));
+        assert_eq!(find("proton-cachyos-slr").as_deref(), Some("Proton-CachyOS (SLR)"));
+        assert_eq!(find("proton-ge-custom").as_deref(), Some("proton-ge-custom"));
+        assert!(find("not-a-tool").is_none());
+        // The same tool in two places is listed once.
+        let twice = list_tools_in(root.path(), &[sys.path().to_path_buf(), sys.path().to_path_buf()]);
+        assert_eq!(twice.iter().filter(|t| t.name == "proton-cachyos").count(), 1);
+    }
+
+    #[test]
+    fn proton_default() {
+        let sys = tempfile::tempdir().unwrap();
+        assert_eq!(default_proton_in(&[sys.path().to_path_buf()]), "GE-Proton");
+        let d = sys.path().join("proton-cachyos");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("proton"), "").unwrap();
+        assert_eq!(default_proton_in(&[sys.path().to_path_buf()]), d.to_string_lossy());
     }
 
     #[test]

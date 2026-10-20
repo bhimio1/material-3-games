@@ -85,6 +85,9 @@ impl Gamescope {
 #[serde(default)]
 pub struct GameOptions {
     pub gamemode: bool,
+    /// CachyOS `game-performance` wrapper (performance power profile while
+    /// playing). Overlaps with GameMode; both may be on.
+    pub cachyos_perf: bool,
     pub mangohud: bool,
     /// Run inside gamescope on the desktop too.
     pub gamescope: bool,
@@ -106,6 +109,7 @@ impl Default for GameOptions {
     fn default() -> Self {
         Self {
             gamemode: false,
+            cachyos_perf: false,
             mangohud: false,
             gamescope: false,
             force_fullscreen: true,

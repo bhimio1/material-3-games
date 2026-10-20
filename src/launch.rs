@@ -84,7 +84,7 @@ pub fn plan(game: &Game, opts: &GameOptions, config: &Config, ctx: Context, disp
                     p.argv = vec!["umu-run".into(), m.exe.clone()];
                     p.env.push(("WINEPREFIX".into(), m.prefix().to_string_lossy().into_owned()));
                     p.env.push(("GAMEID".into(), "umu-default".into()));
-                    p.env.push(("PROTONPATH".into(), if m.proton.is_empty() { "GE-Proton".into() } else { m.proton.clone() }));
+                    p.env.push(("PROTONPATH".into(), if m.proton.is_empty() { crate::steam::appconfig::default_proton() } else { m.proton.clone() }));
                 }
                 Runner::Wine => {
                     p.argv = vec!["wine".into(), m.exe.clone()];
@@ -113,6 +113,9 @@ pub fn plan(game: &Game, opts: &GameOptions, config: &Config, ctx: Context, disp
         }
         if opts.gamemode {
             p.argv.insert(0, "gamemoderun".into());
+        }
+        if opts.cachyos_perf {
+            p.argv.insert(0, crate::steam::appconfig::GAME_PERFORMANCE.into());
         }
     }
     p
@@ -246,6 +249,10 @@ mod tests {
         // No nested gamescope inside Game Mode.
         let p = plan(&g, &opts, &cfg, Context::BigPicture, None);
         assert_eq!(p.argv, ["gamemoderun", "mangohud", "true"]);
+        // CachyOS's wrapper goes outermost and can be combined with GameMode.
+        let opts = GameOptions { gamemode: true, cachyos_perf: true, ..Default::default() };
+        let p = plan(&g, &opts, &cfg, Context::BigPicture, None);
+        assert_eq!(p.argv, ["game-performance", "gamemoderun", "true"]);
     }
 
     #[test]
@@ -257,7 +264,7 @@ mod tests {
         let p = plan(&g, &GameOptions::default(), &cfg, Context::Desktop, None);
         assert_eq!(p.argv, ["umu-run", "/nonexistent/tool.exe", "-windowed", "two words"]);
         assert!(p.env.iter().any(|(k, v)| k == "WINEPREFIX" && v.ends_with("Games/m3-games/prefixes/tool")));
-        assert!(p.env.iter().any(|(k, v)| k == "PROTONPATH" && v == "GE-Proton"));
+        assert!(p.env.iter().any(|(k, v)| k == "PROTONPATH" && *v == crate::steam::appconfig::default_proton()));
     }
 
     #[test]

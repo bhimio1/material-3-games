@@ -181,7 +181,7 @@ pub fn show(ui: &mut Ui, app: &mut App, id: &str) {
             common::card(ui, "Launch options", |ui| {
                 if store {
                     let hint = match game.source {
-                        Source::Steam => "Steam starts this game, so GameMode, MangoHud and gamescope go in its Steam launch options instead (e.g. gamemoderun mangohud %command%).",
+                        Source::Steam => "Steam starts this game, so GameMode, MangoHud and gamescope go in its Steam launch options instead (e.g. gamemoderun mangohud %command%, or game-performance %command% on CachyOS).",
                         Source::Lutris => "Lutris starts this game; set GameMode, MangoHud and gamescope in its Lutris system options.",
                         _ => "Heroic starts this game; set GameMode, MangoHud and gamescope in its Heroic settings.",
                     };
@@ -195,6 +195,18 @@ pub fn show(ui: &mut Ui, app: &mut App, id: &str) {
                         common::require(ui, &mut actions, "gamemoderun", "gamemode", "");
                     }
                     ui.separator();
+                    if opts.cachyos_perf || crate::sys::cmd::exists(crate::steam::appconfig::GAME_PERFORMANCE) {
+                        common::row(ui, "CachyOS performance profile", "Run through CachyOS's game-performance, which switches to the performance power profile while playing.", |ui| {
+                            changed |= switch(ui, &mut opts.cachyos_perf).changed();
+                        });
+                        if opts.cachyos_perf && opts.gamemode {
+                            common::note(ui, "GameMode and the CachyOS profile both tune the CPU; one of them is usually enough.");
+                        }
+                        if opts.cachyos_perf {
+                            common::require(ui, &mut actions, crate::steam::appconfig::GAME_PERFORMANCE, "cachyos-settings", "");
+                        }
+                        ui.separator();
+                    }
                     common::row(ui, "MangoHud", "Frame rate, frame times and temperatures overlay.", |ui| {
                         changed |= switch(ui, &mut opts.mangohud).changed();
                     });
@@ -357,7 +369,7 @@ fn steam_card(ui: &mut Ui, app: &mut App, game: &crate::library::Game, opts: &mu
         // Launch options with helper toggles.
         common::row(ui, "Launch options", "Steam's launch options for this game. Helpers add the common ones around %command%.", |_| {});
         ui.horizontal_wrapped(|ui| {
-            for (label, t) in crate::steam::appconfig::TOGGLES {
+            for (label, t) in crate::steam::appconfig::available_toggles() {
                 let on = crate::steam::appconfig::has_toggle(&cfg.launch, *t);
                 if widgets::filter_chip(ui, label, on, None).clicked() {
                     cfg.launch = crate::steam::appconfig::set_toggle(&cfg.launch, *t, !on);

@@ -71,7 +71,7 @@ pub fn show(ui: &mut Ui, app: &mut App, slug: Option<&str>) {
     if state.loaded.as_ref().map(|s| s.as_deref()) != Some(slug) {
         state.game = slug
             .and_then(|s| manual::load().into_iter().find(|g| g.slug == s))
-            .unwrap_or_else(|| ManualGame { proton: "GE-Proton".into(), ..Default::default() });
+            .unwrap_or_default();
         state.env = state.game.env.join("\n");
         state.loaded = Some(slug.map(str::to_string));
     }
@@ -111,8 +111,8 @@ pub fn show(ui: &mut Ui, app: &mut App, slug: Option<&str>) {
                 if state.game.runner == Runner::Umu {
                     common::require(ui, &mut actions, "umu-run", "umu-launcher", "It downloads and runs Proton for you.");
                     ui.separator();
-                    common::row(ui, "Proton version", "GE-Proton = the latest GE-Proton, downloaded by umu. Or a path to a Proton folder.", |ui| {
-                        ui.add(egui::TextEdit::singleline(&mut state.game.proton).desired_width(300.0));
+                    common::row(ui, "Proton version", "Empty = Proton-CachyOS when installed, else the latest GE-Proton (downloaded by umu). Or a path to a Proton folder.", |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut state.game.proton).hint_text(crate::steam::appconfig::default_proton()).desired_width(300.0));
                     });
                 }
                 if state.game.runner == Runner::Wine {
