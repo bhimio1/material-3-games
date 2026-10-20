@@ -9,6 +9,7 @@ mod hypr;
 mod launch;
 mod library;
 mod session;
+mod steam;
 mod sys;
 mod theme;
 mod thumbs;
