@@ -135,6 +135,7 @@ pub fn scan(home: &Path) -> Vec<Game> {
                 last_played: None,
                 playtime_minutes: None,
                 installed: true,
+                shortcut_appid: None,
                 install_dir: i.path.map(PathBuf::from),
                 launch: Launch::Heroic {
                     runner: i.runner.to_string(),

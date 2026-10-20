@@ -187,6 +187,7 @@ pub fn scan(home: &Path) -> Vec<Game> {
             last_played: None,
             playtime_minutes: None,
             installed: true,
+            shortcut_appid: None,
             install_dir: e.path.as_ref().map(PathBuf::from),
             launch: Launch::Command {
                 argv: split_exec(&e.exec),

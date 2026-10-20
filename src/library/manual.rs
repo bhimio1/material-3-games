@@ -26,7 +26,8 @@ pub struct ManualGame {
     /// `KEY=value` lines.
     pub env: Vec<String>,
     pub runner: Runner,
-    /// PROTONPATH for umu (`GE-Proton` = latest GE-Proton, downloaded by umu).
+    /// PROTONPATH for umu (`GE-Proton` = latest GE-Proton, downloaded by umu;
+    /// empty = Proton-CachyOS when installed, else GE-Proton).
     pub proton: String,
     pub cover: String,
 }
@@ -44,7 +45,6 @@ impl ManualGame {
             name: name.to_string(),
             exe: exe.to_string(),
             runner,
-            proton: "GE-Proton".into(),
             ..Default::default()
         }
     }
@@ -71,6 +71,7 @@ impl ManualGame {
             last_played: None,
             playtime_minutes: None,
             installed: exe.is_file() || crate::sys::cmd::exists(&self.exe),
+            shortcut_appid: None,
             install_dir: exe.parent().map(PathBuf::from).filter(|p| p.is_dir()),
             launch: Launch::Manual(self),
         }

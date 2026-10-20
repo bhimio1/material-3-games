@@ -31,6 +31,18 @@ pub struct RunningChild {
     pub child: Child,
     pub started: Instant,
     pub started_at: i64,
+    /// The record in running.json (scope unit, gamescope app id).
+    pub record: session::Running,
+    pub steam_appid: Option<String>,
+    /// The launcher exited; the game may still be running (store clients).
+    launcher_done: bool,
+    alive: Task<bool>,
+    checked: Instant,
+}
+
+/// gamescope control for the big-picture window inside Game Mode.
+pub struct Gamescope {
+    pub ctl: crate::gamescope::Ctl,
 }
 
 pub struct App {
@@ -51,11 +63,16 @@ pub struct App {
     /// Big-picture state when running in that mode.
     pub big: Option<bigpicture::State>,
     pub running: Option<RunningChild>,
+    /// Set inside gamescope (Game Mode).
+    pub gamescope: Option<Gamescope>,
     /// Windows that will close, while the Game Mode confirmation is open.
     pub confirm_game_mode: Option<Vec<hypr::Client>>,
     entering: Task<Result<session::Entered, String>>,
     rules_job: Task<Result<bool, String>>,
     pub rules_installed: bool,
+    /// A Steam edit waiting for "Restart Steam" confirmation.
+    pub steam_confirm: Option<ui::SteamJob>,
+    steam_job: Task<Result<String, String>>,
     system_dark: Option<bool>,
     _watcher: Option<notify::RecommendedWatcher>,
     events: flume::Receiver<PathBuf>,
@@ -113,10 +130,13 @@ impl App {
             pages: pages::States::default(),
             big: big_picture.then(|| bigpicture::State::new(ctx.clone())),
             running: None,
+            gamescope: None,
             confirm_game_mode: None,
             entering: Task::default(),
             rules_job: Task::default(),
             rules_installed,
+            steam_confirm: None,
+            steam_job: Task::default(),
             system_dark: ctx.system_theme().map(|t| t == egui::Theme::Dark),
             _watcher: watcher,
             events,
@@ -125,6 +145,14 @@ impl App {
             ctx,
         };
         app.apply_theme();
+        if big_picture && crate::gamescope::active() {
+            app.gamescope = setup_gamescope(cc);
+            start_overlay();
+            if app.gamescope.is_some() {
+                let config = app.config.clone();
+                crate::sys::scx::in_background(move || crate::sys::scx::enter_gaming(&config));
+            }
+        }
         app.rescan();
         if let Some(err) = session::take_error() {
             app.toast(err, ToastKind::Error);
@@ -228,6 +256,13 @@ impl App {
     // ------------------------------------------------------------- background
 
     fn poll(&mut self) {
+        if let Some(r) = self.steam_job.take() {
+            match r {
+                Ok(msg) => self.toast(msg, ToastKind::Success),
+                Err(e) => self.toast(e, ToastKind::Error),
+            }
+            self.rescan();
+        }
         self.thumbs.poll();
         if self.scan.poll() {
             if let Some(games) = self.scan.value.take() {
@@ -287,11 +322,28 @@ impl App {
 
         // A game started from big picture finished.
         if let Some(r) = &mut self.running {
-            if let Ok(Some(_)) = r.child.try_wait() {
+            if !r.launcher_done {
+                if let Ok(Some(_)) = r.child.try_wait() {
+                    r.launcher_done = true;
+                }
+            }
+            r.alive.poll();
+            let gone = r.launcher_done && r.alive.value == Some(false);
+            if r.launcher_done && !r.alive.running() && !gone && r.checked.elapsed() > Duration::from_secs(2) {
+                let record = r.record.clone();
+                let appid = r.steam_appid.clone();
+                r.checked = Instant::now();
+                r.alive.spawn(&self.ctx, move || crate::gamesession::alive(&record, appid.as_deref(), false));
+            }
+            if gone {
                 let minutes = (r.started.elapsed().as_secs() + 30) / 60;
                 library::record_play(&r.id, r.started_at, minutes);
                 session::clear_running(&r.id);
                 self.running = None;
+                if let Some(gs) = &self.gamescope {
+                    let _ = gs.ctl.focus(&crate::gamescope::baselayer(None, true));
+                }
+                let _ = crate::overlay::ipc::send(crate::overlay::ipc::Msg::GameEnded);
                 self.rescan();
             } else {
                 self.ctx.request_repaint_after(Duration::from_secs(1));
@@ -318,17 +370,49 @@ impl App {
         }
         if self.is_big_picture() {
             let opts = self.config.options(&game.id);
-            let plan = launch::plan(&game, &opts, &self.config, Context::BigPicture, None);
+            let mut plan = launch::plan(&game, &opts, &self.config, Context::BigPicture, None);
+            // gamescope app id: Steam's own, the shortcut's (Steam's reaper
+            // reports it), or ours via a systemd scope.
+            let mut record = session::Running { id: game.id.clone(), name: game.name.clone(), started: Some(launch::now()), ..Default::default() };
+            if let Some(gs) = &self.gamescope {
+                let gs_id = if launch::uses_steam_shortcut(&game, &opts) {
+                    game.shortcut_appid
+                } else if let Some(a) = game.steam_appid() {
+                    a.parse().ok()
+                } else {
+                    let id = crate::gamescope::appid_for(&game.id, None);
+                    plan.argv = crate::gamescope::wrap_in_scope(std::mem::take(&mut plan.argv), id);
+                    record.unit = plan.argv.iter().find_map(|a| a.strip_prefix("--unit=")).map(str::to_string);
+                    Some(id)
+                };
+                record.gamescope_appid = gs_id;
+                crate::overlay::apply_prefs(&gs.ctl, &opts.overlay);
+            }
             match launch::spawn(&plan) {
                 Ok(child) => {
-                    session::write_running(&game.id, &game.name, child.id());
+                    record.pid = child.id();
+                    session::write_running_full(&record);
                     library::record_play(&game.id, launch::now(), 0);
+                    if let (Some(gs), Some(id)) = (&self.gamescope, record.gamescope_appid) {
+                        let _ = gs.ctl.focus(&crate::gamescope::baselayer(Some(id), false));
+                    }
+                    let _ = crate::overlay::ipc::send(crate::overlay::ipc::Msg::GameStarted);
+                    let steam_appid = if launch::uses_steam_shortcut(&game, &opts) {
+                        game.shortcut_appid.map(|a| a.to_string())
+                    } else {
+                        game.steam_appid().map(str::to_string)
+                    };
                     self.running = Some(RunningChild {
                         id: game.id.clone(),
                         name: game.name.clone(),
                         child,
                         started: Instant::now(),
                         started_at: launch::now(),
+                        record,
+                        steam_appid,
+                        launcher_done: false,
+                        alive: Task::default(),
+                        checked: Instant::now(),
                     });
                     self.toast(format!("Starting {}", game.name), ToastKind::Info);
                 }
@@ -366,14 +450,8 @@ impl App {
             }
             Action::Toast(t, k) => self.toast(t, k),
             Action::Launch(id) => self.launch(&id),
-            Action::Install { packages, aur } => {
-                let list = packages.iter().map(|p| term::shell_quote(p)).collect::<Vec<_>>().join(" ");
-                let script = if aur {
-                    let helper = ["paru", "yay"].into_iter().find(|h| cmd::exists(h)).unwrap_or("paru");
-                    format!("{helper} -S --needed {list}")
-                } else {
-                    format!("sudo pacman -S --needed {list}")
-                };
+            Action::Install { packages } => {
+                let script = crate::sys::os::install_script(&packages);
                 match term::run(&self.config.terminal, &script) {
                     Ok(t) => self.toast(format!("Installing in {t}"), ToastKind::Info),
                     Err(e) => self.toast(e, ToastKind::Error),
@@ -423,6 +501,30 @@ impl App {
                 Ok(()) => self.toast("Installed. Pick \"Hyprland (with Game Mode)\" at your next login.", ToastKind::Success),
                 Err(e) => self.toast(format!("Couldn't install the session: {e}"), ToastKind::Error),
             },
+            Action::Steam(job) => {
+                if crate::steam::account::steam_running() {
+                    self.steam_confirm = Some(job);
+                } else {
+                    self.process(Action::SteamConfirmed(job));
+                }
+            }
+            Action::SteamConfirmed(job) => {
+                self.steam_confirm = None;
+                if self.steam_job.running() {
+                    self.toast("Still applying the previous Steam change", ToastKind::Info);
+                    return;
+                }
+                let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("m3-games"));
+                let specs: Vec<crate::steam::shortcuts::Spec> = match &job {
+                    ui::SteamJob::Shortcuts { add, .. } => add
+                        .iter()
+                        .filter_map(|id| self.game(id))
+                        .map(|g| crate::steam::shortcuts::Spec::for_game(g, &exe))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                self.steam_job.spawn(&self.ctx, move || crate::steam::account::with_steam_closed(|| run_steam_job(&job, &specs)));
+            }
             Action::Quit => self.ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
     }
@@ -457,6 +559,7 @@ impl App {
                     });
             });
         pages::gamemode::confirm_dialog(&self.ctx.clone(), self);
+        steam_confirm_dialog(&self.ctx.clone(), self);
     }
 }
 
@@ -487,5 +590,95 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let _ = self.config.save();
+        if self.gamescope.is_some() {
+            for pid in session::find_processes(&["__overlay"]) {
+                let _ = cmd::run("kill", &["-TERM", &pid.to_string()]);
+            }
+            // Put back the scheduler from before Game Mode.
+            if let Err(e) = crate::sys::scx::restore() {
+                eprintln!("m3-games: {e}");
+            }
+        }
+    }
+}
+
+/// Carry out a Steam edit (Steam must already be closed).
+fn run_steam_job(job: &ui::SteamJob, specs: &[crate::steam::shortcuts::Spec]) -> Result<String, String> {
+    use crate::steam::{account, appconfig, shortcuts};
+    let home = crate::sys::paths::home();
+    let root = account::root(&home).ok_or("Steam isn't installed (no Steam folder found).")?;
+    match job {
+        ui::SteamJob::Shortcuts { remove, .. } => {
+            let user = account::user_dir(&root).ok_or("Log in to Steam once first (no user folder found).")?;
+            let ids = shortcuts::apply(&user, specs, remove)?;
+            Ok(match (ids.len(), remove.len()) {
+                (0, r) => format!("Removed {r} game{} from Steam", if r == 1 { "" } else { "s" }),
+                (a, _) => format!("Added {a} game{} to Steam. Steam Input applies when you launch them here.", if a == 1 { "" } else { "s" }),
+            })
+        }
+        ui::SteamJob::Compat { appid, tool } => {
+            let file = appconfig::config_vdf(&root);
+            let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            account::backup(&file, 10).map_err(|e| e.to_string())?;
+            crate::library::write_atomic(&file, &appconfig::set_compat(&text, appid, tool)).map_err(|e| e.to_string())?;
+            Ok(if tool.is_empty() { "Using Steam's default compatibility tool".into() } else { format!("Using {tool}") })
+        }
+        ui::SteamJob::LaunchOptions { appid, options } => {
+            let user = account::user_dir(&root).ok_or("Log in to Steam once first (no user folder found).")?;
+            let file = appconfig::localconfig(&user);
+            let text = std::fs::read_to_string(&file).unwrap_or_default();
+            account::backup(&file, 10).map_err(|e| e.to_string())?;
+            crate::library::write_atomic(&file, &appconfig::set_launch_options(&text, appid, options)).map_err(|e| e.to_string())?;
+            Ok("Saved the Steam launch options".into())
+        }
+    }
+}
+
+/// "Steam is running" confirmation for Steam edits.
+fn steam_confirm_dialog(ctx: &egui::Context, app: &mut App) {
+    use crate::ui::widgets::{self, ButtonKind};
+    use egui_material_icons::icons::*;
+    let Some(job) = app.steam_confirm.clone() else {
+        return;
+    };
+    let p = app.palette.clone();
+    let mut close = false;
+    let r = crate::ui::common::modal(ctx, &p, "steam-restart", ICON_RESTART_ALT, "Restart Steam?", |ui| {
+        ui.set_max_width(440.0);
+        ui.add(egui::Label::new(egui::RichText::new(format!(
+            "{}. Steam rewrites its settings when it quits, so it has to be closed while this is saved. It starts again right after.",
+            job.describe()
+        )).color(p.on_surface_variant)).wrap());
+        crate::ui::common::dialog_buttons(ui, |ui| {
+            if widgets::button(ui, ButtonKind::Filled, Some(ICON_RESTART_ALT), "Restart Steam").clicked() {
+                app.actions.push(Action::SteamConfirmed(job.clone()));
+                close = true;
+            }
+            if widgets::button(ui, ButtonKind::Text, None, "Cancel").clicked() {
+                close = true;
+            }
+        });
+    });
+    if close || r.should_close() {
+        app.steam_confirm = None;
+    }
+}
+
+/// Tag the big-picture window so gamescope can focus it, and focus it.
+fn setup_gamescope(cc: &eframe::CreationContext<'_>) -> Option<Gamescope> {
+    let window = crate::gamescope::x11_window(cc)?;
+    let ctl = crate::gamescope::Ctl::connect().ok()?;
+    let _ = ctl.tag_window(window, crate::gamescope::UI_APPID);
+    let _ = ctl.focus(&crate::gamescope::baselayer(None, true));
+    Some(Gamescope { ctl })
+}
+
+/// Start the quick overlay next to big picture (once).
+fn start_overlay() {
+    if !session::find_processes(&["__overlay"]).is_empty() {
+        return;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = cmd::spawn_detached(&exe.to_string_lossy(), &["__overlay"]);
     }
 }

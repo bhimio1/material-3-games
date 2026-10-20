@@ -19,6 +19,8 @@ enum Overlay {
     Detail(String, usize),
     Menu(usize),
     ConfirmPower(usize),
+    /// Achievements, guides, news, notes and screenshots for this id.
+    Extras(String),
 }
 
 pub struct State {
@@ -28,6 +30,8 @@ pub struct State {
     col: usize,
     overlay: Overlay,
     scroll_to_focus: bool,
+    extras: Option<crate::ui::steamui::Extras>,
+    extras_scroll: f32,
 }
 
 impl State {
@@ -38,6 +42,8 @@ impl State {
             col: 0,
             overlay: Overlay::None,
             scroll_to_focus: true,
+            extras: None,
+            extras_scroll: 0.0,
         }
     }
 }
@@ -211,7 +217,13 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     };
     let mut navs = keyboard_nav(ui);
     if let Some(rx) = &st.pad {
-        navs.extend(rx.try_iter());
+        let pending: Vec<Nav> = rx.try_iter().collect();
+        // In Game Mode the controller belongs to the game while one is in
+        // front, and to the quick overlay while it's open.
+        let elsewhere = !pending.is_empty() && app.gamescope.is_some() && (app.running.is_some() || crate::overlay::visible());
+        if !elsewhere {
+            navs.extend(pending);
+        }
     }
 
     let recent: Vec<Game> = app.games.iter().filter(|g| g.installed && g.last_played.is_some()).take(8).cloned().collect();
@@ -278,9 +290,33 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             },
             Overlay::Detail(id, sel) => match nav {
                 Nav::Up => st.overlay = Overlay::Detail(id, sel.saturating_sub(1)),
-                Nav::Down => st.overlay = Overlay::Detail(id, (sel + 1).min(3)),
+                Nav::Down => st.overlay = Overlay::Detail(id, (sel + 1).min(4)),
                 Nav::Back | Nav::Options => st.overlay = Overlay::None,
                 Nav::Accept => detail_activate(app, &mut st, &id, sel, &mut actions),
+                _ => {}
+            },
+            Overlay::Extras(id) => match nav {
+                Nav::Up => st.extras_scroll = (st.extras_scroll - 120.0).max(0.0),
+                Nav::Down => st.extras_scroll += 120.0,
+                Nav::Left | Nav::Right => {
+                    if let (Some(e), Some(g)) = (st.extras.as_mut(), app.game(&id)) {
+                        let tabs = crate::ui::steamui::Tab::for_game(g);
+                        let i = tabs.iter().position(|t| *t == e.tab).unwrap_or(0);
+                        let n = tabs.len();
+                        e.tab = tabs[if nav == Nav::Right { (i + 1) % n } else { (i + n - 1) % n }];
+                        e.reading = None;
+                        st.extras_scroll = 0.0;
+                    }
+                }
+                Nav::Back | Nav::Options => {
+                    if st.extras.as_ref().is_some_and(|e| e.reading.is_some()) {
+                        if let Some(e) = st.extras.as_mut() {
+                            e.reading = None;
+                        }
+                    } else {
+                        st.overlay = Overlay::Detail(id, 3);
+                    }
+                }
                 _ => {}
             },
             Overlay::Menu(sel) => match nav {
@@ -407,6 +443,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
                         ("Play", ICON_PLAY_ARROW),
                         ("GameMode", check(opts.gamemode)),
                         ("MangoHud", check(opts.mangohud)),
+                        ("Achievements, guides & notes", ICON_MENU_BOOK),
                         ("Close", ICON_CLOSE),
                     ];
                     menu_list(ui, &items, sel)
@@ -414,6 +451,43 @@ pub fn show(ui: &mut Ui, app: &mut App) {
                 .flatten();
                 if let Some(i) = clicked {
                     detail_activate(app, &mut st, &id, i, &mut actions);
+                }
+            } else {
+                st.overlay = Overlay::None;
+            }
+        }
+        Overlay::Extras(id) => {
+            if let Some(g) = app.game(&id).cloned() {
+                let extras = crate::ui::steamui::Extras::for_game(&mut st.extras, &g);
+                let scroll = st.extras_scroll;
+                let screen_h = ui.ctx().content_rect().height();
+                let mut outs = Vec::new();
+                let config = &mut app.config;
+                let thumbs = &mut app.thumbs;
+                overlay_frame(ui, &p, 900.0, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(widgets::title_text(&g.name, 24.0).color(p.on_surface));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(RichText::new("◀ ▶ Tabs   B Back").size(14.0).color(p.on_surface_variant));
+                        });
+                    });
+                    ui.add_space(8.0);
+                    crate::ui::steamui::tabs(ui, extras, &g);
+                    ui.add_space(8.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(screen_h * 0.62)
+                        .vertical_scroll_offset(scroll)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            outs = crate::ui::steamui::show(ui, extras, &g, config, thumbs, false);
+                        });
+                });
+                for o in outs {
+                    match o {
+                        crate::ui::steamui::Out::SaveConfig => actions.push(Action::ConfigChanged),
+                        crate::ui::steamui::Out::OpenUrl(u) => actions.push(Action::OpenUrl(u)),
+                        crate::ui::steamui::Out::OpenPath(p) => actions.push(Action::OpenPath(p)),
+                    }
                 }
             } else {
                 st.overlay = Overlay::None;
@@ -471,6 +545,10 @@ fn detail_activate(app: &mut App, st: &mut State, id: &str, sel: usize, actions:
             app.config.games.insert(id.to_string(), o);
             actions.push(Action::ConfigChanged);
             st.overlay = Overlay::Detail(id.to_string(), sel);
+        }
+        3 => {
+            st.extras_scroll = 0.0;
+            st.overlay = Overlay::Extras(id.to_string());
         }
         _ => st.overlay = Overlay::None,
     }

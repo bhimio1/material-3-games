@@ -16,7 +16,9 @@ optdepends=(
   'umu-launcher: run Windows games added by hand with Proton'
   'gamemode: GameMode optimisations (gamemoderun)'
   'mangohud: performance overlay'
-  'libpulse: volume control in Game Mode (pactl)'
+  'libpulse: volume and output device in Game Mode (pactl)'
+  'playerctl: media controls in the Game Mode overlay'
+  'brightnessctl: brightness in the Game Mode overlay'
 )
 provides=('material-3-games')
 conflicts=('material-3-games' 'material-3-games-bin')

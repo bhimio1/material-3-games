@@ -448,3 +448,57 @@ pub fn title_text(text: impl Into<String>, size: f32) -> egui::RichText {
 pub fn title_font(size: f32) -> FontId {
     FontId::new(size, crate::theme::style::medium_family())
 }
+
+/// M3 filter chip: outlined when off, tonal with a check mark when on.
+pub fn filter_chip(
+    ui: &mut Ui,
+    label: &str,
+    selected: bool,
+    leading: Option<MaterialIcon>,
+) -> Response {
+    let p = palette(ui);
+    let fg = if selected {
+        p.on_secondary_container
+    } else {
+        p.on_surface_variant
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), title_font(13.0), fg);
+    let leading = if selected { Some(ICON_CHECK) } else { leading };
+    let icon_w = if leading.is_some() { 18.0 + 6.0 } else { 0.0 };
+    let size = vec2(galley.size().x + icon_w + 24.0, 30.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let radius = CornerRadius::same(8);
+        let base = if selected {
+            p.secondary_container
+        } else {
+            Color32::TRANSPARENT
+        };
+        let fill = if selected {
+            state_layer(base, fg, &response)
+        } else if response.hovered() {
+            p.on_surface.gamma_multiply(0.08)
+        } else {
+            base
+        };
+        ui.painter().rect_filled(rect, radius, fill);
+        if !selected {
+            ui.painter().rect_stroke(
+                rect,
+                radius,
+                Stroke::new(1.0, p.outline_variant),
+                StrokeKind::Inside,
+            );
+        }
+        let mut x = rect.left() + 12.0;
+        if let Some(icon) = leading {
+            paint_icon(ui, icon, pos2(x + 9.0, rect.center().y), 18.0, fg);
+            x += icon_w;
+        }
+        ui.painter()
+            .galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley, fg);
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}

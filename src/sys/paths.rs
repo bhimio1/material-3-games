@@ -20,6 +20,17 @@ pub fn tilde(path: &Path) -> String {
     }
 }
 
+/// Expand a leading `~`.
+pub fn expand(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        return home().join(rest);
+    }
+    if path == "~" {
+        return home();
+    }
+    PathBuf::from(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

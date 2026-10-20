@@ -5,6 +5,7 @@ pub mod bigpicture;
 pub mod common;
 pub mod pages;
 pub mod sidebar;
+pub mod steamui;
 pub mod toasts;
 pub mod widgets;
 
@@ -69,7 +70,8 @@ pub enum Action {
     Back,
     Toast(String, ToastKind),
     Launch(String),
-    Install { packages: Vec<String>, aur: bool },
+    /// Repository packages with pacman, the rest from the AUR.
+    Install { packages: Vec<String> },
     OpenPath(PathBuf),
     OpenUrl(String),
     Rescan,
@@ -80,7 +82,36 @@ pub enum Action {
     EnterGameMode,
     InstallRules(bool),
     InstallSession,
+    /// A change to Steam's files (asks to restart Steam if it's running).
+    Steam(SteamJob),
+    /// Same, after the user agreed to restart Steam.
+    SteamConfirmed(SteamJob),
     Quit,
+}
+
+/// Edits to Steam's own files. Steam overwrites them when it exits, so they
+/// run with Steam closed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SteamJob {
+    /// Add/remove non-Steam shortcuts (Steam Input) for these game ids.
+    Shortcuts { add: Vec<String>, remove: Vec<String> },
+    /// Compatibility tool for a Steam game ("" = Steam's default).
+    Compat { appid: String, tool: String },
+    LaunchOptions { appid: String, options: String },
+}
+
+impl SteamJob {
+    pub fn describe(&self) -> String {
+        match self {
+            SteamJob::Shortcuts { add, remove } => match (add.len(), remove.len()) {
+                (a, 0) => format!("Add {a} game{} to Steam for Steam Input", if a == 1 { "" } else { "s" }),
+                (0, r) => format!("Remove {r} game{} from Steam", if r == 1 { "" } else { "s" }),
+                (a, r) => format!("Add {a} and remove {r} Steam shortcuts"),
+            },
+            SteamJob::Compat { .. } => "Change the compatibility tool".into(),
+            SteamJob::LaunchOptions { .. } => "Change the Steam launch options".into(),
+        }
+    }
 }
 
 pub type Actions = Vec<Action>;

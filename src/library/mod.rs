@@ -61,9 +61,19 @@ pub struct Game {
     pub installed: bool,
     pub install_dir: Option<PathBuf>,
     pub launch: Launch,
+    /// App id of the non-Steam shortcut we added to Steam for this game
+    /// (Steam Input), if any.
+    pub shortcut_appid: Option<u32>,
 }
 
 impl Game {
+    pub fn steam_appid(&self) -> Option<&str> {
+        match &self.launch {
+            Launch::Steam { appid } => Some(appid),
+            _ => None,
+        }
+    }
+
     /// Window class the game's window is expected to have, when known.
     pub fn class_hint(&self) -> Option<String> {
         match &self.launch {
@@ -84,6 +94,12 @@ pub struct Export {
     pub last_played: Option<i64>,
     pub playtime_minutes: Option<u64>,
     pub installed: bool,
+    /// Present when the game has a Steam shortcut (Steam Input).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steam_shortcut_appid: Option<u32>,
+    /// The Steam app id, for Steam games.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steam_appid: Option<String>,
 }
 
 impl From<&Game> for Export {
@@ -98,6 +114,8 @@ impl From<&Game> for Export {
             last_played: g.last_played,
             playtime_minutes: g.playtime_minutes,
             installed: g.installed,
+            steam_shortcut_appid: g.shortcut_appid,
+            steam_appid: g.steam_appid().map(str::to_string),
         }
     }
 }
@@ -185,12 +203,14 @@ pub fn sort_recent(games: &mut [Game]) {
 }
 
 /// Which sources to scan.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Enabled {
     pub steam: bool,
     pub lutris: bool,
     pub heroic: bool,
     pub desktop: bool,
+    /// Web API key and SteamID64, to list owned games that aren't installed.
+    pub steam_owned: Option<(String, String)>,
 }
 
 /// Scan every enabled source. Never fails; unreadable sources are skipped.
@@ -209,9 +229,21 @@ pub fn scan(home: &Path, enabled: Enabled) -> Vec<Game> {
         games.extend(desktop::scan(home));
     }
     games.extend(manual::load().into_iter().map(manual::ManualGame::into_game));
+    if enabled.steam_owned.is_some() {
+        // Owned-but-not-installed Steam games, below the installed ones.
+        if let Some((key, steamid)) = &enabled.steam_owned {
+            if let Ok(owned) = crate::steam::owned::fetch(key, steamid) {
+                games.extend(owned);
+            }
+        }
+    }
     // Same id from two places (e.g. native + flatpak Steam): keep the first.
     let mut seen = std::collections::HashSet::new();
     games.retain(|g| seen.insert(g.id.clone()));
+    let shortcuts = crate::steam::shortcuts::current(home);
+    for g in &mut games {
+        g.shortcut_appid = shortcuts.get(&g.id).copied();
+    }
     merge_stats(&mut games, &load_stats());
     sort_recent(&mut games);
     games
@@ -272,6 +304,7 @@ pub(crate) fn test_game(id: &str, name: &str, last: Option<i64>) -> Game {
         last_played: last,
         playtime_minutes: None,
         installed: true,
+        shortcut_appid: None,
         install_dir: None,
         launch: Launch::Command { argv: vec!["true".into()], dir: None },
     }

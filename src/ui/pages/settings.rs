@@ -4,6 +4,7 @@
 use crate::app::App;
 use crate::config::{ColorScheme, ThemeSource};
 use crate::hypr;
+use crate::sys::task::Task;
 use crate::sys::{cmd, paths, term};
 use crate::theme::palette::{parse_hex, to_hex};
 use crate::ui::common::{self, card, row};
@@ -20,6 +21,109 @@ const SEED_PRESETS: &[&str] = &[
 #[derive(Default)]
 pub struct State {
     seed_text: Option<String>,
+    system: Task<SystemInfo>,
+    schedulers: Task<Vec<String>>,
+}
+
+/// CachyOS-related facts, re-read in the background every few seconds so
+/// the page notices installs.
+#[derive(Clone, Debug, Default)]
+pub struct SystemInfo {
+    cachyos: bool,
+    /// CachyOS gaming meta packages that aren't installed.
+    missing: Vec<String>,
+    scxctl: bool,
+}
+
+fn system_info() -> SystemInfo {
+    let cachyos = crate::sys::os::OsRelease::load().is_cachyos();
+    let missing = if cachyos {
+        crate::sys::os::CACHYOS_GAMING.iter().filter(|p| !crate::sys::os::installed(p)).map(|p| p.to_string()).collect()
+    } else {
+        Vec::new()
+    };
+    SystemInfo { cachyos, missing, scxctl: crate::sys::scx::available() }
+}
+
+/// Gaming packages and the sched-ext gaming scheduler. Hidden entirely
+/// when neither applies (not CachyOS, no scxctl).
+fn cachyos_card(ui: &mut Ui, config: &mut crate::config::Config, st: &mut State, actions: &mut Vec<Action>, changed: &mut bool) {
+    st.system.poll();
+    let stale = st.system.finished_at.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(10));
+    if stale && !st.system.running() {
+        st.system.spawn(ui.ctx(), system_info);
+    }
+    let Some(info) = st.system.value.clone() else {
+        return;
+    };
+    if !info.cachyos && !info.scxctl {
+        return;
+    }
+    card(ui, if info.cachyos { "CachyOS" } else { "Scheduler" }, |ui| {
+        if info.cachyos {
+            if info.missing.is_empty() {
+                row(ui, "Gaming packages", "cachyos-gaming-meta and cachyos-gaming-applications are installed.", |ui| {
+                    ui.label(egui::RichText::new(ICON_CHECK_CIRCLE).size(22.0).color(widgets::palette(ui).primary));
+                });
+            } else {
+                let desc = format!(
+                    "CachyOS's gaming set: Proton, Wine and 32-bit libraries (cachyos-gaming-meta), plus Steam, Lutris, gamescope, MangoHud and more (cachyos-gaming-applications). Missing: {}.",
+                    info.missing.join(", ")
+                );
+                row(ui, "Gaming packages", &desc, |ui| {
+                    if widgets::button(ui, ButtonKind::Filled, Some(ICON_DOWNLOAD), "Install CachyOS gaming packages").clicked() {
+                        actions.push(Action::Install { packages: info.missing.clone() });
+                    }
+                });
+            }
+            if info.scxctl {
+                ui.separator();
+            }
+        }
+        if !info.scxctl {
+            return;
+        }
+        row(ui, "Gaming scheduler", "Switch to a sched-ext scheduler (through scx_loader) in Game Mode, and put the previous one back afterwards.", |ui| {
+            *changed |= switch(ui, &mut config.scx_gaming).changed();
+        });
+        if !config.scx_gaming {
+            return;
+        }
+        st.schedulers.poll();
+        if st.schedulers.value.is_none() && !st.schedulers.running() {
+            st.schedulers.spawn(ui.ctx(), crate::sys::scx::supported);
+        }
+        let mut list = st.schedulers.value.clone().unwrap_or_default();
+        if list.is_empty() {
+            list = ["lavd", "bpfland", "cosmos", "flash", "p2dq", "rusty"].map(String::from).to_vec();
+        }
+        ui.separator();
+        row(ui, "Scheduler", "scx_lavd is tuned for interactive and gaming loads.", |ui| {
+            egui::ComboBox::from_id_salt("scx-sched").width(160.0).selected_text(format!("scx_{}", config.scx_sched)).show_ui(ui, |ui| {
+                for s in &list {
+                    if ui.selectable_label(config.scx_sched == *s, format!("scx_{s}")).clicked() && config.scx_sched != *s {
+                        config.scx_sched = s.clone();
+                        *changed = true;
+                    }
+                }
+            });
+        });
+        ui.separator();
+        row(ui, "Mode", "The scx_loader profile to start it in.", |ui| {
+            egui::ComboBox::from_id_salt("scx-mode").width(160.0).selected_text(crate::sys::scx::mode_label(&config.scx_mode)).show_ui(ui, |ui| {
+                for (m, label) in crate::sys::scx::MODES {
+                    if ui.selectable_label(config.scx_mode == *m, *label).clicked() && config.scx_mode != *m {
+                        config.scx_mode = m.to_string();
+                        *changed = true;
+                    }
+                }
+            });
+        });
+        ui.separator();
+        row(ui, "Also for desktop games", "Use it while a game started from the library runs on the desktop, too.", |ui| {
+            *changed |= switch(ui, &mut config.scx_desktop).changed();
+        });
+    });
 }
 
 pub fn show(ui: &mut Ui, app: &mut App) {
@@ -37,6 +141,14 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     .map(|s| (s, app.games.iter().filter(|g| g.source == s).count()))
     .collect();
     let count = |s| counts.iter().find(|(x, _)| *x == s).map(|(_, n)| *n).unwrap_or(0);
+    // Non-Steam games that could get a Steam shortcut, and those that have one.
+    let shortcut_candidates: Vec<String> = app
+        .games
+        .iter()
+        .filter(|g| g.steam_appid().is_none() && g.installed && g.shortcut_appid.is_none())
+        .map(|g| g.id.clone())
+        .collect();
+    let with_shortcuts: Vec<String> = app.games.iter().filter(|g| g.shortcut_appid.is_some()).map(|g| g.id.clone()).collect();
     let config = &mut app.config;
     let st = &mut app.pages.settings;
     let mut actions = Vec::new();
@@ -68,6 +180,67 @@ pub fn show(ui: &mut Ui, app: &mut App) {
                 }
             }
         });
+
+        card(ui, "Steam", |ui| {
+            row(
+                ui,
+                "Steam Input for all games",
+                &format!(
+                    "Add your non-Steam games to Steam as shortcuts and launch them through Steam, so controller layouts and Steam's overlay work everywhere. {} can be added, {} already are.",
+                    shortcut_candidates.len(),
+                    with_shortcuts.len()
+                ),
+                |ui| {
+                    if !with_shortcuts.is_empty() && widgets::button(ui, ButtonKind::Text, None, "Remove all").clicked() {
+                        for id in &with_shortcuts {
+                            config.games.entry(id.clone()).or_default().steam_input = false;
+                        }
+                        changed = true;
+                        actions.push(Action::Steam(crate::ui::SteamJob::Shortcuts { add: vec![], remove: with_shortcuts.clone() }));
+                    }
+                    if widgets::button_enabled(ui, ButtonKind::Tonal, Some(ICON_ADD), "Add all", !shortcut_candidates.is_empty()).clicked() {
+                        for id in &shortcut_candidates {
+                            config.games.entry(id.clone()).or_default().steam_input = true;
+                        }
+                        changed = true;
+                        actions.push(Action::Steam(crate::ui::SteamJob::Shortcuts { add: shortcut_candidates.clone(), remove: vec![] }));
+                    }
+                },
+            );
+            ui.separator();
+            row(ui, "Controller settings", "Steam Input layouts for the desktop and big picture, in Steam.", |ui| {
+                if widgets::button(ui, ButtonKind::Tonal, Some(ICON_SPORTS_ESPORTS), "Open in Steam").clicked() {
+                    let _ = crate::steam::open("steam://open/settings/controller");
+                }
+            });
+            ui.separator();
+            row(ui, "Steam Web API key", "Optional. Exact achievements and your games that aren't installed. Get a key at steamcommunity.com/dev/apikey.", |ui| {
+                if widgets::icon_button(ui, ICON_OPEN_IN_NEW, "Get a key", true).clicked() {
+                    actions.push(Action::OpenUrl("https://steamcommunity.com/dev/apikey".into()));
+                }
+                let r = ui.add(egui::TextEdit::singleline(&mut config.steam_api_key).password(true).desired_width(240.0).hint_text("optional"));
+                if r.lost_focus() {
+                    changed = true;
+                }
+            });
+            ui.separator();
+            let detected = if config.steam_id.trim().is_empty() { config.steamid64() } else { String::new() };
+            row(ui, "SteamID64", if detected.is_empty() { "Your 17-digit Steam ID, for the Web API." } else { "Detected from your last Steam login. Set it to use another account." }, |ui| {
+                let r = ui.add(egui::TextEdit::singleline(&mut config.steam_id).desired_width(240.0).hint_text(if detected.is_empty() { "7656119…".to_string() } else { detected.clone() }));
+                if r.lost_focus() {
+                    changed = true;
+                }
+            });
+            ui.separator();
+            row(ui, "Show games that aren't installed", "List every game you own on Steam (needs the Web API key), with an Install button.", |ui| {
+                if switch(ui, &mut config.show_uninstalled).changed() {
+                    changed = true;
+                    rescan = true;
+                }
+            });
+        });
+
+        cachyos_card(ui, config, st, &mut actions, &mut changed);
 
         card(ui, "Cover art", |ui| {
             row(ui, "SteamGridDB API key", "Finds covers for games that have none. Get a free key at steamgriddb.com → Preferences → API.", |ui| {

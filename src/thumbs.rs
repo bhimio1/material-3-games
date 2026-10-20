@@ -23,7 +23,8 @@ pub struct Thumbs {
 }
 
 fn decode(path: &Path) -> Option<ColorImage> {
-    let img = image::open(path).ok()?;
+    // Sniff the format: cached downloads have no file extension.
+    let img = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
     let img = if img.width() > MAX_SIZE || img.height() > MAX_SIZE {
         img.thumbnail(MAX_SIZE, MAX_SIZE)
     } else {
