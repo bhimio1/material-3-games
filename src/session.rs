@@ -252,10 +252,41 @@ pub fn exit() -> Result<(), String> {
 /// Install the login session with one pkexec prompt: the session entry and
 /// the `m3-session` script (needed when m3-games itself lives in ~/.local).
 pub fn install_session() -> Result<(), String> {
-    cmd::run("pkexec", &["sh", "-c", &install_script()]).map(|_| ())
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    cmd::run("pkexec", &["sh", "-c", &install_script(&exe)]).map(|_| ())
 }
 
-fn install_script() -> String {
+/// The session entry for a self-installed m3-session. Display managers
+/// don't search the user's PATH, so Exec is absolute and names this very
+/// m3-games binary.
+fn local_desktop_entry(exe: &Path) -> String {
+    // Desktop entries quote whole arguments only.
+    let var = desktop_quote(&format!("M3_GAMES_BIN={}", exe.to_string_lossy()));
+    let exec = format!("env {var} /usr/local/bin/m3-session");
+    SESSION_DESKTOP.replace("Exec=/usr/bin/m3-session", &format!("Exec={exec}"))
+}
+
+/// Quote an argument for a desktop entry's Exec key.
+fn desktop_quote(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./+@,:=".contains(c)) {
+        return s.to_string();
+    }
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        if matches!(c, '"' | '`' | '$' | '\\') {
+            // Escaped for Exec, then the backslash itself for the string value.
+            out.push_str("\\\\");
+        }
+        if c == '%' {
+            out.push('%');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
+fn install_script(exe: &Path) -> String {
     r#"set -e
 install -Dm755 /dev/stdin /usr/local/bin/m3-session.new <<'M3_SESSION_EOF'
 __SCRIPT__M3_SESSION_EOF
@@ -265,7 +296,7 @@ cat > /usr/share/wayland-sessions/m3-games-session.desktop <<'M3_DESKTOP_EOF'
 __DESKTOP__M3_DESKTOP_EOF
 "#
     .replace("__SCRIPT__", SESSION_SCRIPT)
-    .replace("__DESKTOP__", SESSION_DESKTOP)
+    .replace("__DESKTOP__", &local_desktop_entry(exe))
 }
 
 #[cfg(test)]
@@ -315,8 +346,9 @@ mod tests {
 
     #[test]
     fn install_script_parses() {
-        let script = install_script();
+        let script = install_script(Path::new("/home/me/.local/bin/m3-games"));
         assert!(script.contains("M3_SESSION_EOF\nmv "));
+        assert!(script.contains("Exec=env M3_GAMES_BIN=/home/me/.local/bin/m3-games /usr/local/bin/m3-session\n"));
         let out = std::process::Command::new("sh").args(["-n", "-c", &script]).output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     }
@@ -324,6 +356,22 @@ mod tests {
     #[test]
     fn session_files_are_embedded() {
         assert!(SESSION_SCRIPT.starts_with("#!/usr/bin/env bash"));
-        assert!(SESSION_DESKTOP.contains("Exec=m3-session"));
+        assert!(SESSION_DESKTOP.contains("Exec=/usr/bin/m3-session\n"));
+        // No rc files: bash without a login shell.
+        assert!(!SESSION_SCRIPT.contains("bash_profile") && !SESSION_SCRIPT.contains(".bashrc"));
+        assert!(SESSION_SCRIPT.contains("M3_GAMES_BIN"));
+    }
+
+    #[test]
+    fn desktop_exec_quoting() {
+        assert_eq!(desktop_quote("/usr/bin/m3-games"), "/usr/bin/m3-games");
+        assert_eq!(desktop_quote("/home/a b/m3-games"), "\"/home/a b/m3-games\"");
+        assert_eq!(desktop_quote("/x/$y"), "\"/x/\\\\$y\"");
+        assert_eq!(desktop_quote("/x/100%"), "\"/x/100%%\"");
+        let entry = local_desktop_entry(Path::new("/opt/m3/m3-games"));
+        assert!(entry.contains("Exec=env M3_GAMES_BIN=/opt/m3/m3-games /usr/local/bin/m3-session\n"));
+        assert!(!entry.contains("Exec=/usr/bin"));
+        let entry = local_desktop_entry(Path::new("/home/a b/m3-games"));
+        assert!(entry.contains("Exec=env \"M3_GAMES_BIN=/home/a b/m3-games\" /usr/local/bin/m3-session\n"));
     }
 }

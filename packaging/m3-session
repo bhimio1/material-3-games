@@ -6,7 +6,19 @@
 # gamescope directly on the GPU with the big-picture UI (with Steam
 # integration, -e, so the quick overlay and focus switching work), then
 # starts Hyprland again when gamescope exits. A normal logout ends the loop.
+#
+# Display managers (SDDM, GDM, greetd) start this directly; it doesn't rely
+# on the user's login shell (fish on CachyOS) or read any rc files, so
+# m3-games is found through M3_GAMES_BIN, then PATH, then the usual
+# install locations.
 set -u
+
+# Per-user installs live in ~/.local/bin, which a display manager's PATH
+# usually lacks.
+case ":${PATH:-}:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) export PATH="${PATH:-/usr/local/bin:/usr/bin:/bin}:$HOME/.local/bin" ;;
+esac
 
 export M3_SESSION=1
 RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/m3-games"
@@ -21,8 +33,12 @@ start_desktop() {
 }
 
 m3_games() {
-    if command -v m3-games >/dev/null 2>&1; then
+    if [ -n "${M3_GAMES_BIN:-}" ] && [ -x "$M3_GAMES_BIN" ]; then
+        echo "$M3_GAMES_BIN"
+    elif command -v m3-games >/dev/null 2>&1; then
         command -v m3-games
+    elif [ -x /usr/bin/m3-games ]; then
+        echo /usr/bin/m3-games
     else
         echo "$HOME/.local/bin/m3-games"
     fi
@@ -61,8 +77,11 @@ while true; do
 
     started=$(date +%s)
     gamescope "${args[@]}" -- "$(m3_games)" --big-picture > "$RUN/gamescope.log" 2>&1
-    unset MANGOHUD_CONFIGFILE
     status=$?
+    unset MANGOHUD_CONFIGFILE
+    # Put back the CPU scheduler from before Game Mode (a no-op unless the
+    # gaming scheduler was used and the big-picture UI didn't get to it).
+    "$(m3_games)" scheduler restore >/dev/null 2>&1 || true
     # A gamescope that dies right away usually couldn't get the GPU; say so
     # in Hyprland instead of looping.
     if [ "$status" -ne 0 ] && [ $(( $(date +%s) - started )) -lt 5 ]; then
