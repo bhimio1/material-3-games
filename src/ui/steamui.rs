@@ -254,10 +254,20 @@ fn achievements(ui: &mut Ui, extras: &mut Extras, thumbs: &mut Thumbs, compact: 
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(vec2(56.0, 56.0), egui::Sense::hover());
-        progress_ring(ui, rect.center(), 24.0, a.progress(), p.primary, p.surface_container_highest);
+        if a.schema_only {
+            ui.painter().circle_filled(rect.center(), 26.0, p.secondary_container);
+            widgets::paint_icon(ui, ICON_TROPHY, rect.center(), 26.0, p.on_secondary_container);
+        } else {
+            progress_ring(ui, rect.center(), 24.0, a.progress(), p.primary, p.surface_container_highest);
+        }
         ui.vertical(|ui| {
-            ui.label(widgets::title_text(format!("{} of {} unlocked", a.unlocked(), a.total()), 16.0).color(p.on_surface));
-            ui.label(RichText::new(format!("{:.0}% complete", a.progress() * 100.0)).color(p.on_surface_variant));
+            if a.schema_only {
+                ui.label(widgets::title_text(format!("{} achievements", a.total()), 16.0).color(p.on_surface));
+                ui.add(egui::Label::new(RichText::new("Your progress shows once you've played with Steam on this PC, or with a Web API key in Settings.").size(12.5).color(p.on_surface_variant)).wrap());
+            } else {
+                ui.label(widgets::title_text(format!("{} of {} unlocked", a.unlocked(), a.total()), 16.0).color(p.on_surface));
+                ui.label(RichText::new(format!("{:.0}% complete", a.progress() * 100.0)).color(p.on_surface_variant));
+            }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.checkbox(&mut extras.show_hidden, "Show hidden");
@@ -269,12 +279,12 @@ fn achievements(ui: &mut Ui, extras: &mut Extras, thumbs: &mut Thumbs, compact: 
         let secret = x.hidden && !x.unlocked && !extras.show_hidden;
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(vec2(icon, icon), egui::Sense::hover());
-            let url = if x.unlocked { x.icon_url.as_deref() } else { x.icon_gray_url.as_deref().or(x.icon_url.as_deref()) };
+            let url = if x.unlocked || a.schema_only { x.icon_url.as_deref() } else { x.icon_gray_url.as_deref().or(x.icon_url.as_deref()) };
             let path = url.and_then(|u| extras.images.path(&ctx, u));
-            crate::ui::art::paint(ui, thumbs, path.as_deref(), rect, 8, if x.unlocked { ICON_TROPHY } else { ICON_LOCK });
+            crate::ui::art::paint(ui, thumbs, path.as_deref(), rect, 8, if x.unlocked || a.schema_only { ICON_TROPHY } else { ICON_LOCK });
             ui.vertical(|ui| {
                 let title = if secret { "Hidden achievement".to_string() } else { x.name.clone() };
-                ui.label(widgets::title_text(title, 14.5).color(if x.unlocked { p.on_surface } else { p.on_surface_variant }));
+                ui.label(widgets::title_text(title, 14.5).color(if x.unlocked || a.schema_only { p.on_surface } else { p.on_surface_variant }));
                 let mut sub = if secret { "Keep playing to find out.".to_string() } else { x.description.clone() };
                 if let Some(t) = x.unlock_time {
                     let when = chrono::DateTime::from_timestamp(t, 0).map(|d| d.with_timezone(&chrono::Local).format("%b %e, %Y").to_string()).unwrap_or_default();
