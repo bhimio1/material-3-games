@@ -20,7 +20,7 @@ It has two jobs:
 - **Heroic:** installed Epic, GOG and Amazon games.
 - **Apps:** native games from your application menu (`Categories=Game`).
 - **Added by hand:** native binaries, or Windows `.exe` files run with Proton through umu-launcher (or Wine). Each game gets its own prefix in `~/Games/m3-games/prefixes`.
-- **Cover art:** missing covers come from Heroic's store art and, with a free API key, SteamGridDB.
+- **Cover art:** missing covers come from Steam's CDN (for Steam games, along with the hero banner), Heroic's store art and, with a free API key, SteamGridDB. Downloads are cached in `~/.cache/m3-games/covers`.
 - **Library view:** search, sort by recent, name or play time, filters per source, and live updates when you install or remove games.
 
 **Desktop mode on Hyprland**
@@ -51,12 +51,17 @@ It has two jobs:
   - The shortcut runs `m3-games __run <id>`, so this app's options (GameMode, MangoHud, env, Proton prefix) still apply, and it stays running until the game exits so Steam keeps Steam Input active. **Controller layout** opens Steam's configurator for that shortcut.
   - **Steam restart caveat:** Steam rewrites `shortcuts.vdf`, `config.vdf` and `localconfig.vdf` when it quits, so edits only stick while it's closed. If Steam is running, the app asks, closes Steam, saves (keeping a timestamped `.bak` of the file, newest 10), and starts Steam again.
   - From a terminal or the shell: `m3-games steam-input on|off <id>...`.
-- **Achievements:** read from Steam's local cache (`appcache/stats`), with unlock dates and a progress ring. Hidden achievements stay hidden until you ask. With an optional Steam Web API key you get the Web API's exact list, and global unlock percentages are shown when Steam's API is reachable.
+- **Achievements:** read from Steam's local cache (`appcache/stats`), with unlock dates and a progress ring. Hidden achievements stay hidden until you ask. With an optional Steam Web API key you get the Web API's exact list. Global unlock percentages need no key. For a game you haven't played on this PC and without a key, the names, icons and percentages come from the game's public achievements page.
 - **Guides:**
-  - The Steam Community's top-rated guides for each game, opened in a native reader: headings, lists, images, quotes and links, no browser needed. Readable in Game Mode, and cached so they work offline.
+  - The Steam Community's top-rated guides for each game, in your language (from `$LANG`, with a chip to show every language) and page by page.
+  - Guides open in a native reader with headings, lists, tables, quotes, images, small icons beside their text, and links, so no browser is needed. Readable in Game Mode, and cached so they work offline.
+
+![Guide reader](docs/screenshot-guide.png)
   - Pin guides to a game, including any URL or a local Markdown/text file, which works for non-Steam games too.
 - **Notes:** per-game notes, shown in the detail page, big picture and the Game Mode overlay.
-- **News:** patch notes and announcements (Steam's news API).
+- **News:** the developer's patch notes and announcements (Steam's news API), laid out like guides with headings, lists, images and YouTube links. Long posts collapse. Outside feeds are shown only when a game has no announcements of its own.
+
+![News](docs/screenshot-news.png)
 - **Per-game Steam settings:**
   - **Compatibility tool:** Proton versions from Steam and `compatibilitytools.d` (GE-Proton…).
   - **Launch options:** with one-tap helpers for `gamemoderun`, `mangohud`, `PROTON_ENABLE_WAYLAND=1`, `DXVK_HDR=1`, `PROTON_USE_NTSYNC=1`, FSR and the DXVK FPS HUD.
@@ -205,7 +210,7 @@ src/
   sys/            commands, terminals, background tasks, os-release and pacman (os.rs),
                   sched-ext via scxctl (scx.rs), overlay quick settings (quick.rs)
   gamepad.rs      controller input (gilrs)
-  covers.rs       cover cache, SteamGridDB
+  covers.rs       cover cache: Steam CDN, Heroic art, SteamGridDB
   ui/             sidebar, pages, big picture, Steam extras (steamui.rs), M3 widgets
 packaging/        PKGBUILD, AUR -bin template, desktop files, m3-session
 ```
