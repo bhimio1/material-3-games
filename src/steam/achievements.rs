@@ -1,6 +1,8 @@
 //! Achievements for Steam games: read from Steam's local cache
 //! (`appcache/stats/*.bin`, binary KeyValues), optionally refined with the
-//! Steam Web API, plus global unlock percentages (no key needed).
+//! Steam Web API, plus global unlock percentages (no key needed). Without
+//! either, the names, icons and percentages come from the game's public
+//! achievements page on the Steam Community.
 
 use super::bvdf::{self, Value};
 use serde::Deserialize;
@@ -24,6 +26,9 @@ pub struct Achievement {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Achievements {
     pub list: Vec<Achievement>,
+    /// Only the game's achievement list is known, not which are unlocked
+    /// (no local cache and no Web API key).
+    pub schema_only: bool,
 }
 
 impl Achievements {
@@ -176,7 +181,7 @@ pub fn from_cache(root: &Path, account: Option<u32>, appid: &str) -> Option<Achi
         }
         list.push(a);
     }
-    let mut a = Achievements { list };
+    let mut a = Achievements { list, schema_only: false };
     a.sort();
     Some(a)
 }
@@ -260,7 +265,56 @@ pub fn parse_web(appid: &str, schema_json: &str, player_json: &str) -> Option<Ac
             }
         })
         .collect();
-    let mut a = Achievements { list };
+    let mut a = Achievements { list, schema_only: false };
+    a.sort();
+    Some(a)
+}
+
+pub fn community_url(appid: &str) -> String {
+    format!("https://steamcommunity.com/stats/{appid}/achievements?l=english")
+}
+
+/// Parse a game's public achievements page (`/stats/<appid>/achievements`).
+/// The page is rendered from JSON embedded as `valve-ssr-data`, whose
+/// `renderContext.queryData` (itself a JSON string) holds the schema and the
+/// global percentages, keyed by each achievement's `internal_key`.
+pub fn parse_community(html: &str) -> Option<Achievements> {
+    let start = html.find("id=\"valve-ssr-data\"")?;
+    let body_start = start + html[start..].find('>')? + 1;
+    let body_end = body_start + html[body_start..].find("</script>")?;
+    let ssr: serde_json::Value = serde_json::from_str(&html[body_start..body_end]).ok()?;
+    let query_data: serde_json::Value = serde_json::from_str(ssr.pointer("/renderContext/queryData")?.as_str()?).ok()?;
+    let queries = query_data.get("queries")?.as_array()?;
+    let data = |kind: &str| {
+        queries.iter().find_map(|q| {
+            let key = q.get("queryKey")?.as_array()?;
+            (key.first()?.as_str()? == "achievements" && key.last()?.as_str()? == kind).then(|| q.pointer("/state/data")).flatten()
+        })
+    };
+    let schema = data("schema")?;
+    let percentages = data("globalpercentages").and_then(|d| d.get("percentages"));
+    let s = |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    let mut list = Vec::new();
+    for group in schema.get("groups")?.as_array()? {
+        for a in group.get("achievements").and_then(|v| v.as_array()).into_iter().flatten() {
+            let api_name = s(a, "api_name");
+            let key = a.get("internal_key").map(|k| k.to_string()).unwrap_or_default();
+            list.push(Achievement {
+                name: Some(s(a, "name")).filter(|n| !n.is_empty()).unwrap_or_else(|| api_name.clone()),
+                description: s(a, "description"),
+                hidden: a.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false),
+                icon_url: Some(s(a, "icon_achieved")).filter(|u| u.starts_with("http")),
+                icon_gray_url: Some(s(a, "icon_unachieved")).filter(|u| u.starts_with("http")),
+                global_percent: percentages.and_then(|p| p.get(&key)).and_then(|v| v.as_f64()).map(|v| v as f32),
+                api_name,
+                ..Default::default()
+            });
+        }
+    }
+    if list.is_empty() {
+        return None;
+    }
+    let mut a = Achievements { list, schema_only: true };
     a.sort();
     Some(a)
 }
@@ -282,6 +336,11 @@ pub fn load(root: Option<&Path>, account: Option<u32>, appid: &str, key: &str, s
     }
     if result.is_none() {
         result = root.and_then(|r| from_cache(r, account, appid));
+    }
+    if result.is_none() {
+        // Names and percentages only (cached for a day).
+        let html = super::web::get_cached("achievements", appid, &community_url(appid), std::time::Duration::from_secs(24 * 3600)).ok()?;
+        return parse_community(&html);
     }
     let mut a = result?;
     if let Ok(g) = super::web::get(&format!(
@@ -384,5 +443,39 @@ mod tests {
         assert_eq!(a.list[1].global_percent, Some(12.5));
         assert!(parse_global("nope").is_empty());
         assert!(parse_web("1", "{}", "").is_none());
+    }
+
+    fn fixture(name: &str) -> String {
+        std::fs::read_to_string(format!("{}/tests/fixtures/steam/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+    }
+
+    #[test]
+    fn real_global_percentages() {
+        // The live endpoint sends percentages as strings.
+        let g = parse_global(&fixture("global-achievements-620.json"));
+        assert_eq!(g.len(), 51);
+        assert_eq!(g["ACH.SURVIVE_CONTAINER_RIDE"], 74.0);
+    }
+
+    #[test]
+    fn community_page() {
+        let a = parse_community(&fixture("achievements-620.html")).unwrap();
+        assert!(a.schema_only);
+        assert_eq!(a.total(), 51);
+        assert_eq!(a.unlocked(), 0);
+        // Most common first.
+        let first = &a.list[0];
+        assert_eq!(first.api_name, "ACH.SURVIVE_CONTAINER_RIDE");
+        assert_eq!(first.name, "Wake Up Call");
+        assert_eq!(first.description, "Survive the manual override");
+        assert_eq!(first.global_percent, Some(74.0));
+        assert_eq!(first.icon_url.as_deref(), Some("https://shared.fastly.steamstatic.com/community_assets/images/apps/620/SURVIVE_CONTAINER_RIDE.jpg"));
+        assert_eq!(first.icon_gray_url.as_deref(), Some("https://shared.fastly.steamstatic.com/community_assets/images/apps/620/SURVIVE_CONTAINER_RIDE_BW.jpg"));
+        assert!(a.list.iter().all(|x| x.global_percent.is_some()));
+
+        let er = parse_community(&fixture("achievements-1245620.html")).unwrap();
+        assert_eq!(er.total(), 42);
+        assert!(er.list.iter().any(|x| x.hidden && x.name == "Elden Lord"));
+        assert!(parse_community("<html>no data</html>").is_none());
     }
 }

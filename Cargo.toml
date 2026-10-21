@@ -14,8 +14,8 @@ eframe = { version = "0.37", default-features = false, features = ["default_font
 egui = "0.37"
 egui_material_icons = { version = "0.9", features = ["filled", "outline"] }
 material-colors = "0.4"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "ico"] }
-ureq = { version = "2.12", features = ["json"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "ico", "gif"] }
+ureq = { version = "2.12", features = ["json", "native-certs"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 gilrs = "0.11"
 notify = "6"

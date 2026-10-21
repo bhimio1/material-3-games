@@ -1,7 +1,8 @@
 //! Steam Community guides: the list for a game and a native reader for a
 //! guide page. Steam has no public API for guide content, so both are read
-//! from the community HTML pages. The parsers look for the class names
-//! Steam has used for years and fall back gracefully when they change.
+//! from the community HTML pages. The parsers follow the markup Steam serves
+//! today (checked against live pages; fixtures in `tests/fixtures/steam/`)
+//! and fall back gracefully when it changes.
 
 use scraper::{ElementRef, Html, Node, Selector};
 use std::time::Duration;
@@ -23,8 +24,60 @@ impl GuideItem {
     }
 }
 
-pub fn list_url(appid: &str) -> String {
-    format!("https://steamcommunity.com/app/{appid}/guides/?browsefilter=toprated&p=1")
+/// One page of a game's guides (30 per page), optionally only guides tagged
+/// with a Steam language (`english`, `german`, …).
+pub fn list_url(appid: &str, page: u32, language: Option<&str>) -> String {
+    let mut url = format!("https://steamcommunity.com/app/{appid}/guides/?browsefilter=toprated&p={}", page.max(1));
+    if let Some(lang) = language.filter(|l| !l.is_empty()) {
+        url.push_str(&format!("&requiredtags%5B%5D={lang}"));
+    }
+    url
+}
+
+/// Steam's guide-language tag for the system locale (`$LANG` etc.), or None
+/// when it has no tag for it.
+pub fn steam_language(locale: &str) -> Option<&'static str> {
+    let l = locale.split(['.', '@']).next().unwrap_or("").to_ascii_lowercase();
+    let (lang, region) = l.split_once(['_', '-']).unwrap_or((&l, ""));
+    Some(match (lang, region) {
+        ("en", _) => "english",
+        ("de", _) => "german",
+        ("fr", _) => "french",
+        ("it", _) => "italian",
+        ("es", "mx" | "ar" | "co" | "cl" | "pe" | "ve" | "us") => "latam",
+        ("es", _) => "spanish",
+        ("pt", "br") => "brazilian",
+        ("pt", _) => "portuguese",
+        ("ru", _) => "russian",
+        ("pl", _) => "polish",
+        ("uk", _) => "ukrainian",
+        ("tr", _) => "turkish",
+        ("nl", _) => "dutch",
+        ("sv", _) => "swedish",
+        ("da", _) => "danish",
+        ("fi", _) => "finnish",
+        ("no" | "nb" | "nn", _) => "norwegian",
+        ("cs", _) => "czech",
+        ("hu", _) => "hungarian",
+        ("ro", _) => "romanian",
+        ("el", _) => "greek",
+        ("bg", _) => "bulgarian",
+        ("th", _) => "thai",
+        ("vi", _) => "vietnamese",
+        ("ja", _) => "japanese",
+        ("ko", _) => "koreana",
+        ("zh", "tw" | "hk" | "mo") => "tchinese",
+        ("zh", _) => "schinese",
+        _ => return None,
+    })
+}
+
+/// The guide language for this system.
+pub fn system_language() -> Option<&'static str> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .find_map(|v| std::env::var(v).ok().filter(|s| !s.is_empty() && s != "C" && s != "POSIX"))
+        .and_then(|l| steam_language(&l))
 }
 
 pub fn guide_url(id: &str) -> String {
@@ -45,7 +98,40 @@ fn id_from_href(href: &str) -> Option<String> {
     (!id.is_empty()).then_some(id)
 }
 
-/// Parse a game's guide list page.
+/// A page of guide results.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GuidePage {
+    pub items: Vec<GuideItem>,
+    /// "Showing 1-30 of 1,662 entries" → 1662.
+    pub total: Option<u32>,
+    pub has_more: bool,
+    /// Steam showed its mature-content check instead of the list.
+    pub content_check: bool,
+}
+
+/// Parse a game's guide list page, with paging info.
+pub fn parse_page(html: &str) -> GuidePage {
+    let items = parse_list(html);
+    let doc = Html::parse_document(html);
+    let info = doc.select(&sel(".workshopBrowsePagingInfo")).next().map(text_of).unwrap_or_default();
+    // "Showing 1-30 of 1,662 entries"
+    let nums: Vec<u32> = info
+        .split(|c: char| !(c.is_ascii_digit() || c == ','))
+        .filter_map(|t| t.replace(',', "").parse().ok())
+        .collect();
+    let (end, total) = match nums.as_slice() {
+        [_, end, total, ..] => (Some(*end), Some(*total)),
+        _ => (None, None),
+    };
+    let has_more = match (end, total) {
+        (Some(e), Some(t)) => e < t,
+        _ => doc.select(&sel("a.pagebtn")).any(|a| text_of(a) == ">"),
+    };
+    let content_check = items.is_empty() && html.contains("wants_mature_content_apps");
+    GuidePage { items, total, has_more, content_check }
+}
+
+/// Parse the items of a game's guide list page.
 pub fn parse_list(html: &str) -> Vec<GuideItem> {
     let doc = Html::parse_document(html);
     let mut out: Vec<GuideItem> = Vec::new();
@@ -53,7 +139,8 @@ pub fn parse_list(html: &str) -> Vec<GuideItem> {
     let title_sel = sel(".workshopItemTitle");
     let desc_sel = sel(".workshopItemShortDesc");
     let author_sel = sel(".workshopItemAuthorName");
-    let img_sel = sel("img.workshopItemPreviewImage, img");
+    let preview_sel = sel("img.workshopItemPreviewImage");
+    let any_img_sel = sel("img:not(.backgroundImg):not(.fileRating)");
     let rating_sel = sel("img.fileRating");
     for a in doc.select(&links) {
         let Some(id) = a.value().attr("href").and_then(id_from_href) else {
@@ -92,7 +179,13 @@ pub fn parse_list(html: &str) -> Vec<GuideItem> {
             title,
             author,
             description: container.select(&desc_sel).next().map(text_of).unwrap_or_default(),
-            preview: container.select(&img_sel).next().and_then(|i| i.value().attr("src")).map(str::to_string),
+            // The real preview, not the small blurred background copy.
+            preview: container
+                .select(&preview_sel)
+                .next()
+                .or_else(|| container.select(&any_img_sel).next())
+                .and_then(|i| i.value().attr("src"))
+                .map(str::to_string),
             stars,
         });
     }
@@ -112,8 +205,21 @@ pub enum Block {
     Heading(u8, String),
     Paragraph(Vec<Span>),
     Item(Vec<Span>),
-    Image(String),
-    Quote(Vec<Span>),
+    /// `thumb`: Steam's small floated thumbnails (`sizeThumb`), shown beside
+    /// the text that follows rather than full width. `link`: where clicking
+    /// it goes (the full-size image, or a video).
+    Image { url: String, thumb: bool, link: Option<String> },
+    /// Quotes can hold any blocks (Steam guides put headings and images in
+    /// them).
+    Quote(Vec<Block>),
+    /// Rows of cells; `header` cells come from `<th>` / `bb_table_th`.
+    Table(Vec<Vec<Cell>>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cell {
+    pub header: bool,
+    pub spans: Vec<Span>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -125,10 +231,14 @@ pub struct Guide {
 }
 
 /// Steam wraps external links in its link filter.
+/// Steam wraps external links in its link filter: `linkfilter/?u=<url>`
+/// on current pages, `?url=` on older ones.
 fn unwrap_link(href: &str) -> String {
-    if let Some(i) = href.find("linkfilter/?url=") {
-        let rest = &href[i + "linkfilter/?url=".len()..];
-        return percent_decode(rest);
+    for marker in ["linkfilter/?u=", "linkfilter/?url="] {
+        if let Some(i) = href.find(marker) {
+            let rest = &href[i + marker.len()..];
+            return percent_decode(rest.split('&').next().unwrap_or(rest));
+        }
     }
     href.to_string()
 }
@@ -209,17 +319,6 @@ impl Builder {
             self.blocks.push(Block::Paragraph(spans));
         }
     }
-
-    fn take_spans(&mut self) -> Vec<Span> {
-        let before = self.blocks.len();
-        self.flush();
-        if self.blocks.len() > before {
-            if let Some(Block::Paragraph(s)) = self.blocks.pop() {
-                return s;
-            }
-        }
-        Vec::new()
-    }
 }
 
 fn collapse_ws(s: &str) -> String {
@@ -254,6 +353,64 @@ fn heading_level(e: &scraper::node::Element) -> Option<u8> {
     }
 }
 
+fn is_row(e: &scraper::node::Element) -> bool {
+    e.name() == "tr" || (e.name() == "div" && e.classes().any(|c| c == "bb_table_tr"))
+}
+
+fn is_cell(e: &scraper::node::Element) -> Option<bool> {
+    match e.name() {
+        "td" => Some(false),
+        "th" => Some(true),
+        "div" => e.classes().find_map(|c| match c {
+            "bb_table_td" => Some(false),
+            "bb_table_th" => Some(true),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+/// Rows of a `<table>` or Steam's `div.bb_table` (rows may sit inside
+/// `tbody`/`thead`).
+fn table_rows(table: ElementRef, style: Style, link: Option<&str>) -> Vec<Vec<Cell>> {
+    let mut rows = Vec::new();
+    for node in table.descendants() {
+        let Some(row) = ElementRef::wrap(node) else { continue };
+        if !is_row(row.value()) {
+            continue;
+        }
+        // Skip rows of nested tables: their closest table must be ours.
+        let owner = row
+            .ancestors()
+            .filter_map(ElementRef::wrap)
+            .find(|a| a.value().name() == "table" || a.value().classes().any(|c| c == "bb_table"));
+        if owner.map(|o| o.id()) != Some(table.id()) {
+            continue;
+        }
+        let mut cells = Vec::new();
+        for c in row.children().filter_map(ElementRef::wrap) {
+            let Some(header) = is_cell(c.value()) else { continue };
+            let mut inner = Builder { blocks: Vec::new(), spans: Vec::new() };
+            walk(*c, &mut inner, Style { bold: header || style.bold, ..style }, link);
+            let mut spans = Vec::new();
+            inner.flush();
+            for blk in inner.blocks {
+                if let Block::Paragraph(s) | Block::Item(s) = blk {
+                    if !spans.is_empty() {
+                        spans.push(Span { text: "\n".into(), bold: false, italic: false, link: None });
+                    }
+                    spans.extend(s);
+                }
+            }
+            cells.push(Cell { header, spans });
+        }
+        if !cells.is_empty() {
+            rows.push(cells);
+        }
+    }
+    rows
+}
+
 fn walk(node: ego_tree::NodeRef<Node>, b: &mut Builder, style: Style, link: Option<&str>) {
     for child in node.children() {
         match child.value() {
@@ -279,8 +436,9 @@ fn walk(node: ego_tree::NodeRef<Node>, b: &mut Builder, style: Style, link: Opti
                     }
                     "img" => {
                         if let Some(src) = e.attr("src").filter(|s| s.starts_with("http")) {
+                            let thumb = e.classes().any(|c| c == "sizeThumb");
                             b.flush();
-                            b.blocks.push(Block::Image(src.to_string()));
+                            b.blocks.push(Block::Image { url: src.to_string(), thumb, link: link.map(str::to_string) });
                         }
                     }
                     "li" => {
@@ -298,13 +456,38 @@ fn walk(node: ego_tree::NodeRef<Node>, b: &mut Builder, style: Style, link: Opti
                     "blockquote" => {
                         b.flush();
                         let mut inner = Builder { blocks: Vec::new(), spans: Vec::new() };
-                        walk(child, &mut inner, Style { italic: true, ..style }, link);
-                        let spans = inner.take_spans();
-                        if !spans.is_empty() {
-                            b.blocks.push(Block::Quote(spans));
+                        walk(child, &mut inner, style, link);
+                        inner.flush();
+                        if !inner.blocks.is_empty() {
+                            b.blocks.push(Block::Quote(inner.blocks));
                         }
                     }
-                    "ul" | "ol" | "p" | "div" | "table" | "tr" => {
+                    "table" => {
+                        b.flush();
+                        let rows = table_rows(el, style, link);
+                        if !rows.is_empty() {
+                            b.blocks.push(Block::Table(rows));
+                        }
+                    }
+                    "div" if e.classes().any(|c| c == "bb_table") => {
+                        b.flush();
+                        let rows = table_rows(el, style, link);
+                        if !rows.is_empty() {
+                            b.blocks.push(Block::Table(rows));
+                        }
+                    }
+                    "div" if e.classes().any(|c| c == "bb_blockquote" || c == "quote") => {
+                        b.flush();
+                        let mut inner = Builder { blocks: Vec::new(), spans: Vec::new() };
+                        walk(child, &mut inner, style, link);
+                        inner.flush();
+                        if !inner.blocks.is_empty() {
+                            b.blocks.push(Block::Quote(inner.blocks));
+                        }
+                    }
+                    // Steam appends "[host]" after external links.
+                    "span" if e.classes().any(|c| c == "bb_link_host") => {}
+                    "ul" | "ol" | "p" | "div" | "tr" | "hr" => {
                         b.flush();
                         walk(child, b, style, link);
                         b.flush();
@@ -323,14 +506,20 @@ pub fn parse_guide(html: &str) -> Guide {
     let doc = Html::parse_document(html);
     let first_text = |s: &str| doc.select(&sel(s)).next().map(text_of).unwrap_or_default();
     let mut g = Guide {
-        title: first_text(".guideTopTitle"),
+        title: first_text(".workshopItemTitle"),
         description: first_text(".guideTopDescription"),
         authors: first_text(".guideAuthors, .friendBlockContent"),
         blocks: Vec::new(),
     };
     if g.title.is_empty() {
-        g.title = first_text(".workshopItemTitle, title");
+        g.title = first_text(".guideTopTitle");
     }
+    if g.title.is_empty() {
+        // "Steam Community :: Guide :: <title>"
+        let t = first_text("title");
+        g.title = t.rsplit(" :: ").next().unwrap_or(&t).to_string();
+    }
+    g.authors = g.authors.trim_start_matches("By ").to_string();
     let section = sel(".subSection");
     let title_sel = sel(".subSectionTitle");
     let desc_sel = sel(".subSectionDesc");
@@ -356,20 +545,47 @@ pub fn parse_guide(html: &str) -> Guide {
     g
 }
 
+/// Blocks for an HTML fragment (news posts reuse the guide reader).
+pub fn parse_fragment(html: &str) -> Vec<Block> {
+    let doc = Html::parse_fragment(html);
+    let mut b = Builder { blocks: Vec::new(), spans: Vec::new() };
+    walk(*doc.root_element(), &mut b, Style::default(), None);
+    b.flush();
+    b.blocks
+}
+
 /// Plain-text version of a span list.
 #[cfg(test)]
 pub fn plain(spans: &[Span]) -> String {
     spans.iter().map(|s| s.text.as_str()).collect()
 }
 
-/// Guide list for an app (cached for a day, offline from cache).
-pub fn fetch_list(appid: &str) -> Result<Vec<GuideItem>, String> {
-    let html = super::web::get_cached("guides", &format!("list-{appid}"), &list_url(appid), Duration::from_secs(24 * 3600))?;
-    let list = parse_list(&html);
-    if list.is_empty() {
-        return Err("No guides found (or Steam changed its page layout).".into());
+/// A page of guides for an app (cached for a day, offline from cache). With
+/// a language, only guides tagged with it; when that finds nothing on the
+/// first page, all languages instead (`language_used` says which).
+pub fn fetch_list(appid: &str, page: u32, language: Option<&str>) -> Result<(GuidePage, Option<String>), String> {
+    let get = |lang: Option<&str>| -> Result<GuidePage, String> {
+        let key = format!("list-{appid}-p{page}-{}", lang.unwrap_or("all"));
+        // Steam shows a content check for mature games; the cookie is what its
+        // "Proceed" button sets, scoped to this app.
+        let cookie = format!("wants_mature_content_apps={appid}");
+        let html = super::web::get_cached_with_cookie("guides", &key, &list_url(appid, page, lang), &cookie, Duration::from_secs(24 * 3600))?;
+        Ok(parse_page(&html))
+    };
+    let mut used = language.map(str::to_string);
+    let mut result = get(language)?;
+    if result.items.is_empty() && page <= 1 && language.is_some() {
+        result = get(None)?;
+        used = None;
     }
-    Ok(list)
+    if result.items.is_empty() {
+        return Err(if result.content_check {
+            "Steam wants a mature-content confirmation for this game's guides. Open them in the browser once.".into()
+        } else {
+            "No guides found (or Steam changed its page layout).".into()
+        });
+    }
+    Ok((result, used))
 }
 
 /// One guide (cached for a week, offline from cache).
@@ -387,6 +603,7 @@ pub fn from_markdown(title: &str, text: &str) -> Guide {
     let mut blocks = Vec::new();
     let mut para: Vec<String> = Vec::new();
     let span = |t: &str| vec![Span { text: t.to_string(), bold: false, italic: false, link: None }];
+    let paragraph = |t: &str| Block::Paragraph(span(t));
     let flush = |para: &mut Vec<String>, blocks: &mut Vec<Block>| {
         if !para.is_empty() {
             blocks.push(Block::Paragraph(span(&para.join(" "))));
@@ -411,11 +628,11 @@ pub fn from_markdown(title: &str, text: &str) -> Guide {
             blocks.push(Block::Item(span(i)));
         } else if let Some(q) = l.strip_prefix("> ") {
             flush(&mut para, &mut blocks);
-            blocks.push(Block::Quote(span(q)));
+            blocks.push(Block::Quote(vec![paragraph(q)]));
         } else if l.starts_with("![") {
             flush(&mut para, &mut blocks);
             if let Some(url) = l.split_once("](").map(|(_, r)| r.trim_end_matches(')')) {
-                blocks.push(Block::Image(url.to_string()));
+                blocks.push(Block::Image { url: url.to_string(), thumb: false, link: None });
             }
         } else {
             para.push(l.to_string());
@@ -498,8 +715,12 @@ mod tests {
         assert!(b.contains(&Block::Heading(2, "Controls".into())));
         assert!(b.iter().any(|x| matches!(x, Block::Item(s) if plain(s) == "Jump: A")));
         assert!(b.iter().any(|x| matches!(x, Block::Item(s) if plain(s) == "Dash: X" && s[0].bold)));
-        assert!(b.contains(&Block::Image("https://steamuserimages-a.akamaihd.net/ugc/2/shot.jpg".into())));
-        assert!(b.iter().any(|x| matches!(x, Block::Quote(s) if plain(s) == "Quoted tip")));
+        assert!(b.contains(&Block::Image {
+            url: "https://steamuserimages-a.akamaihd.net/ugc/2/shot.jpg".into(),
+            thumb: false,
+            link: Some("https://x/full.jpg".into()),
+        }));
+        assert!(b.iter().any(|x| matches!(x, Block::Quote(q) if matches!(&q[..], [Block::Paragraph(s)] if plain(s) == "Quoted tip"))));
         assert_eq!(b.last(), Some(&Block::Paragraph(vec![Span { text: "Go left.".into(), bold: false, italic: false, link: None }])));
     }
 
@@ -510,12 +731,110 @@ mod tests {
         assert!(matches!(&g.blocks[1], Block::Paragraph(s) if plain(s) == "Use fire. Really."));
         assert!(matches!(&g.blocks[2], Block::Item(_)));
         assert!(matches!(&g.blocks[3], Block::Quote(_)));
-        assert_eq!(g.blocks[4], Block::Image("https://x/y.png".into()));
+        assert_eq!(g.blocks[4], Block::Image { url: "https://x/y.png".into(), thumb: false, link: None });
     }
 
     #[test]
     fn link_unwrapping() {
         assert_eq!(unwrap_link("https://steamcommunity.com/linkfilter/?url=https%3A%2F%2Fa.b%2Fc%3Fd%3De"), "https://a.b/c?d=e");
+        assert_eq!(unwrap_link("https://steamcommunity.com/linkfilter/?u=https%3A%2F%2Fmapgenie.io%2Fx"), "https://mapgenie.io/x");
         assert_eq!(unwrap_link("https://a.b"), "https://a.b");
+    }
+}
+
+
+/// Tests against trimmed copies of real Steam Community pages.
+#[cfg(test)]
+mod real_pages {
+    use super::*;
+
+    fn fixture(name: &str) -> String {
+        std::fs::read_to_string(format!("{}/tests/fixtures/steam/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+    }
+
+    #[test]
+    fn guide_list_page() {
+        let p = parse_page(&fixture("guides-list-620.html"));
+        assert_eq!(p.total, Some(1662));
+        assert!(p.has_more);
+        assert!(!p.content_check);
+        assert_eq!(p.items.len(), 3);
+        let g = &p.items[0];
+        assert_eq!(g.id, "2936034273");
+        assert_eq!(g.title, "100% Achievement Guide: Portal 2");
+        assert_eq!(g.author, "Cynic 0055");
+        assert_eq!(g.stars, Some(5));
+        assert!(g.description.starts_with("This is a comprehensive 100% Achievement guide"));
+        // The real preview, not the blurred low-res background behind it.
+        assert!(g.preview.as_deref().unwrap().contains("imw=200"));
+        assert_eq!(p.items[1].author, "Marik78");
+    }
+
+    #[test]
+    fn mature_content_check() {
+        let p = parse_page(&fixture("guides-content-check.html"));
+        assert!(p.items.is_empty());
+        assert!(p.content_check);
+    }
+
+    #[test]
+    fn paging_without_info() {
+        let p = parse_page(r#"<a class="pagebtn" href="?p=2">&gt;</a>"#);
+        assert!(p.has_more && p.total.is_none());
+        assert!(!parse_page("<div class=workshopBrowsePagingInfo>Showing 1-12 of 12 entries</div>").has_more);
+    }
+
+    #[test]
+    fn table_guide() {
+        let g = parse_guide(&fixture("guide-table.html"));
+        assert_eq!(g.title, "100% Achievement Guide: Portal 2");
+        assert_eq!(g.authors, "Cynic 0055 and 1 collaborators");
+        assert_eq!(g.blocks[0], Block::Heading(1, "Introduction:".into()));
+        assert!(matches!(&g.blocks[1], Block::Image { thumb: false, link: Some(_), .. }));
+        let Block::Table(rows) = &g.blocks[2] else { panic!("{:?}", g.blocks[2]) };
+        assert_eq!(rows.len(), 9);
+        assert!(rows[0].iter().all(|c| c.header));
+        assert_eq!(plain(&rows[0][0].spans), "Achievement Breakdown: (51)");
+        assert!(rows[1..].iter().all(|r| r.iter().all(|c| !c.header)));
+    }
+
+    #[test]
+    fn quotes_keep_their_content() {
+        let g = parse_guide(&fixture("guide-quote.html"));
+        assert_eq!(g.title, "Terraria: The Complete 100% Achievement Guide (1.4.5 UPDATED)");
+        let quotes: Vec<&Vec<Block>> = g.blocks.iter().filter_map(|b| if let Block::Quote(q) = b { Some(q) } else { None }).collect();
+        assert!(quotes.len() >= 3);
+        assert!(quotes[0].iter().any(|b| matches!(b, Block::Heading(1, h) if h.starts_with("ATTENTION"))));
+        assert!(quotes.iter().any(|q| matches!(q.first(), Some(Block::Image { .. }))));
+    }
+
+    #[test]
+    fn thumbnails() {
+        let g = parse_guide(&fixture("guide-thumbs.html"));
+        assert_eq!(g.title, "Ultimate SDV Fishing Guide (1.6)");
+        let thumbs = g.blocks.iter().filter(|b| matches!(b, Block::Image { thumb: true, .. })).count();
+        assert!(thumbs > 10, "{thumbs}");
+        let i = g.blocks.iter().position(|b| matches!(b, Block::Image { thumb: true, .. })).unwrap();
+        let Block::Paragraph(p) = &g.blocks[i + 1] else { panic!() };
+        assert_eq!(plain(p), "Anchovy\nArea: Ocean | Time: Any | Weather: Any");
+    }
+
+    #[test]
+    fn external_links() {
+        let g = parse_guide(&fixture("guide-links.html"));
+        let links: Vec<&Span> = g.blocks.iter().flat_map(|b| if let Block::Paragraph(s) = b { s.iter() } else { [].iter() }).filter(|s| s.link.is_some()).collect();
+        assert_eq!(links[0].text, "The Lands Between");
+        assert_eq!(links[0].link.as_deref(), Some("https://mapgenie.io/elden-ring/maps/the-lands-between"));
+        // The " [mapgenie.io]" host hint Steam appends is not part of the text.
+        assert!(g.blocks.iter().all(|b| !format!("{b:?}").contains("[mapgenie.io]")));
+    }
+
+    #[test]
+    fn languages() {
+        assert_eq!(steam_language("en_US.UTF-8"), Some("english"));
+        assert_eq!(steam_language("pt_BR.UTF-8"), Some("brazilian"));
+        assert_eq!(steam_language("zh_TW"), Some("tchinese"));
+        assert_eq!(steam_language("es_MX.UTF-8"), Some("latam"));
+        assert_eq!(list_url("620", 2, Some("english")), "https://steamcommunity.com/app/620/guides/?browsefilter=toprated&p=2&requiredtags%5B%5D=english");
     }
 }

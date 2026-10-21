@@ -5,19 +5,24 @@ use std::time::{Duration, SystemTime};
 
 const UA: &str = concat!("m3-games/", env!("CARGO_PKG_VERSION"));
 
-fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).user_agent(UA).build()
+/// The HTTP client: honours `HTTPS_PROXY`/`NO_PROXY` and trusts the system's
+/// certificate store.
+pub fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).user_agent(UA).try_proxy_from_env(true).build()
 }
 
 /// GET a URL as text.
 pub fn get(url: &str) -> Result<String, String> {
-    agent()
-        .get(url)
-        .set("Accept-Language", "en-US,en;q=0.8")
-        .call()
-        .map_err(|e| e.to_string())?
-        .into_string()
-        .map_err(|e| e.to_string())
+    get_with_cookie(url, "")
+}
+
+/// GET with a `Cookie` header (empty = none).
+pub fn get_with_cookie(url: &str, cookie: &str) -> Result<String, String> {
+    let mut req = agent().get(url).set("Accept-Language", "en-US,en;q=0.8");
+    if !cookie.is_empty() {
+        req = req.set("Cookie", cookie);
+    }
+    req.call().map_err(|e| e.to_string())?.into_string().map_err(|e| e.to_string())
 }
 
 pub fn cache_file(kind: &str, key: &str) -> PathBuf {
@@ -28,6 +33,11 @@ pub fn cache_file(kind: &str, key: &str) -> PathBuf {
 /// GET with a cache: fresh copies younger than `max_age` are used as-is;
 /// when the network fails, any cached copy is used.
 pub fn get_cached(kind: &str, key: &str, url: &str, max_age: Duration) -> Result<String, String> {
+    get_cached_with_cookie(kind, key, url, "", max_age)
+}
+
+/// [`get_cached`] with a `Cookie` header.
+pub fn get_cached_with_cookie(kind: &str, key: &str, url: &str, cookie: &str, max_age: Duration) -> Result<String, String> {
     let file = cache_file(kind, key);
     let fresh = std::fs::metadata(&file)
         .and_then(|m| m.modified())
@@ -39,7 +49,7 @@ pub fn get_cached(kind: &str, key: &str, url: &str, max_age: Duration) -> Result
             return Ok(text);
         }
     }
-    match get(url) {
+    match get_with_cookie(url, cookie) {
         Ok(text) => {
             let _ = crate::library::write_atomic(&file, &text);
             Ok(text)
