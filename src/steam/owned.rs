@@ -39,7 +39,7 @@ pub fn parse(json: &str) -> Vec<Game> {
                     source: Source::Steam,
                     cover: None,
                     hero: None,
-                    cover_url: Some(format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{}/library_600x900.jpg", g.appid)),
+                    cover_url: Some(crate::covers::steam_art_url(&g.appid.to_string(), "library_600x900.jpg")),
                     last_played: (g.rtime_last_played > 0).then_some(g.rtime_last_played),
                     playtime_minutes: (g.playtime_forever > 0).then_some(g.playtime_forever),
                     installed: false,

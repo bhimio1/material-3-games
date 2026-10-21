@@ -266,7 +266,7 @@ impl App {
         self.thumbs.poll();
         if self.scan.poll() {
             if let Some(games) = self.scan.value.take() {
-                let missing = games.iter().any(|g| g.cover.is_none() && (g.cover_url.is_some() || !self.config.steamgriddb_key.is_empty()));
+                let missing = games.iter().any(|g| crate::covers::wants_fetch(g, &self.config.steamgriddb_key));
                 self.games = games;
                 if missing && !self.covers.running() && self.covers.finished_at.is_none() {
                     self.fetch_covers();
