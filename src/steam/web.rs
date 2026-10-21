@@ -5,8 +5,10 @@ use std::time::{Duration, SystemTime};
 
 const UA: &str = concat!("m3-games/", env!("CARGO_PKG_VERSION"));
 
-fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).user_agent(UA).build()
+/// The HTTP client: honours `HTTPS_PROXY`/`NO_PROXY` and trusts the system's
+/// certificate store.
+pub fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).user_agent(UA).try_proxy_from_env(true).build()
 }
 
 /// GET a URL as text.
