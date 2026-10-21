@@ -5,7 +5,7 @@
 use crate::config::{Config, PinnedGuide};
 use crate::library::Game;
 use crate::steam::achievements::Achievements;
-use crate::steam::guides::{self, Block, Guide, GuideItem, Span};
+use crate::steam::guides::{self, Block, Cell, Guide, GuideItem, GuidePage, Span};
 use crate::steam::news::NewsItem;
 use crate::sys::task::Task;
 use crate::thumbs::Thumbs;
@@ -92,7 +92,18 @@ pub struct Extras {
     pub game_id: String,
     pub tab: Tab,
     achievements: Task<Option<Achievements>>,
-    guide_list: Task<Result<Vec<GuideItem>, String>>,
+    /// The page of guides being fetched.
+    guide_list: Task<Result<(GuidePage, Option<String>), String>>,
+    /// Guides loaded so far, page by page.
+    guides: Vec<GuideItem>,
+    guides_page: u32,
+    guides_more: bool,
+    guides_total: Option<u32>,
+    guides_error: Option<String>,
+    /// Language the list is filtered by (None = all languages).
+    guides_language: Option<String>,
+    /// The user asked for every language.
+    guides_all_languages: bool,
     news: Task<Result<Vec<NewsItem>, String>>,
     guide: Task<Result<Guide, String>>,
     /// The guide being read (as it would be pinned).
@@ -113,6 +124,13 @@ impl Extras {
             tab: dev_tab.unwrap_or(Tab::for_game(game)[0]),
             achievements: Task::default(),
             guide_list: Task::default(),
+            guides: Vec::new(),
+            guides_page: 0,
+            guides_more: false,
+            guides_total: None,
+            guides_error: None,
+            guides_language: None,
+            guides_all_languages: false,
             news: Task::default(),
             guide: Task::default(),
             reading: std::env::var("M3_GAMES_GUIDE").ok().map(|id| PinnedGuide { title: "Guide".into(), steam_id: id, location: String::new() }),
@@ -322,28 +340,89 @@ fn guide_tab(ui: &mut Ui, extras: &mut Extras, game: &Game, config: &mut Config,
     let Some(appid) = game.steam_appid() else {
         return;
     };
-    if extras.guide_list.value.is_none() && !extras.guide_list.running() {
+    let language = if extras.guides_all_languages { None } else { guides::system_language() };
+    if extras.guides_page == 0 && extras.guides_error.is_none() && !extras.guide_list.running() {
         let a = appid.to_string();
-        extras.guide_list.spawn(&ctx, move || guides::fetch_list(&a));
+        extras.guide_list.spawn(&ctx, move || guides::fetch_list(&a, 1, language));
     }
-    extras.guide_list.poll();
-    ui.add_space(10.0);
-    ui.label(widgets::title_text("Steam Community guides", 14.0).color(p.primary));
-    match extras.guide_list.value.clone() {
-        None => common::loading(ui, "Loading guides…"),
-        Some(Err(e)) => common::empty_hint(ui, &e),
-        Some(Ok(list)) => {
-            for item in list {
-                let stars = item.stars.map(|s| format!(" · {}", "★".repeat(s as usize))).unwrap_or_default();
-                let sub = format!("{}{}", if item.author.is_empty() { "Guide".into() } else { format!("by {}", item.author) }, stars);
-                let preview = if compact { None } else { item.preview.as_deref().and_then(|u| extras.images.path(&ctx, u)) };
-                let resp = guide_row(ui, thumbs, preview.as_deref(), compact, &item.title, &sub);
-                if resp.clicked() {
-                    extras.open_guide(&ctx, PinnedGuide { title: item.title.clone(), steam_id: item.id.clone(), location: item.url() });
+    if let Some(result) = extras.guide_list.take() {
+        match result {
+            Ok((page, used)) => {
+                for item in page.items {
+                    if !extras.guides.iter().any(|g| g.id == item.id) {
+                        extras.guides.push(item);
+                    }
                 }
+                extras.guides_page += 1;
+                extras.guides_more = page.has_more;
+                extras.guides_total = page.total;
+                extras.guides_language = used;
             }
+            Err(e) => extras.guides_error = Some(e),
         }
     }
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.label(widgets::title_text("Steam Community guides", 14.0).color(p.primary));
+        if let Some(t) = extras.guides_total {
+            ui.label(RichText::new(format!("{t}")).size(12.5).color(p.on_surface_variant));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Only offer the filter when there is a language to filter by.
+            if let Some(lang) = guides::system_language() {
+                let label = if extras.guides_all_languages { "All languages".to_string() } else { format!("{} only", capitalize(lang)) };
+                if widgets::filter_chip(ui, &label, !extras.guides_all_languages, Some(ICON_TRANSLATE)).clicked() {
+                    extras.guides_all_languages = !extras.guides_all_languages;
+                    extras.guides.clear();
+                    extras.guides_page = 0;
+                    extras.guides_more = false;
+                    extras.guides_total = None;
+                    extras.guides_error = None;
+                    extras.guide_list = Task::default();
+                }
+            }
+        });
+    });
+    if !extras.guides_all_languages && extras.guides_page > 0 && extras.guides_language.is_none() && language.is_some() {
+        ui.label(RichText::new("No guides in your language, so all languages are shown.").size(12.5).color(p.on_surface_variant));
+    }
+    if extras.guides.is_empty() {
+        match &extras.guides_error {
+            Some(e) => common::empty_hint(ui, e),
+            None => common::loading(ui, "Loading guides…"),
+        }
+        return;
+    }
+    let mut open = None;
+    for item in &extras.guides {
+        let stars = item.stars.map(|s| format!(" · {}", "★".repeat(s as usize))).unwrap_or_default();
+        let sub = format!("{}{}", if item.author.is_empty() { "Guide".into() } else { format!("by {}", item.author) }, stars);
+        let preview = if compact { None } else { item.preview.as_deref().and_then(|u| extras.images.path(&ctx, u)) };
+        if guide_row(ui, thumbs, preview.as_deref(), compact, &item.title, &sub).clicked() {
+            open = Some(PinnedGuide { title: item.title.clone(), steam_id: item.id.clone(), location: item.url() });
+        }
+    }
+    if let Some(g) = open {
+        extras.open_guide(&ctx, g);
+    }
+    if extras.guide_list.running() {
+        common::loading(ui, "Loading more…");
+    } else if let Some(e) = &extras.guides_error {
+        common::empty_hint(ui, e);
+    } else if extras.guides_more {
+        ui.add_space(6.0);
+        if widgets::button(ui, ButtonKind::Tonal, Some(ICON_EXPAND_MORE), "Load more").clicked() {
+            let a = appid.to_string();
+            let next = extras.guides_page + 1;
+            let lang = extras.guides_language.clone();
+            extras.guide_list.spawn(&ctx, move || guides::fetch_list(&a, next, lang.as_deref()));
+        }
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
 /// A guide in the list: preview image (or a book icon), title and byline.
@@ -417,9 +496,7 @@ fn reader(ui: &mut Ui, extras: &mut Extras, game: &Game, config: &mut Config, th
                 ui.add(egui::Label::new(RichText::new(&g.description).italics().color(p.on_surface_variant)).wrap());
             }
             ui.add_space(8.0);
-            for block in &g.blocks {
-                render_block(ui, block, &mut extras.images, thumbs, &ctx, out);
-            }
+            render_blocks(ui, &g.blocks, &mut extras.images, thumbs, &ctx, out);
         }
     }
 }
@@ -450,6 +527,47 @@ fn spans_ui(ui: &mut Ui, spans: &[Span], out: &mut Vec<Out>) {
     });
 }
 
+/// Render blocks in order. A small thumbnail followed by text is laid out
+/// as a row (Steam guides use this for item lists with icons).
+pub fn render_blocks(ui: &mut Ui, blocks: &[Block], images: &mut RemoteImages, thumbs: &mut Thumbs, ctx: &egui::Context, out: &mut Vec<Out>) {
+    let mut i = 0;
+    while i < blocks.len() {
+        if let Block::Image { url, thumb: true, link } = &blocks[i] {
+            // Thumbnails and the text up to the next thumbnail/heading/image.
+            let mut j = i + 1;
+            while j < blocks.len() && matches!(blocks[j], Block::Paragraph(_) | Block::Item(_)) {
+                j += 1;
+            }
+            let text = &blocks[i + 1..j];
+            ui.horizontal_top(|ui| {
+                thumb_image(ui, url, link.as_deref(), images, thumbs, ctx, out);
+                ui.vertical(|ui| {
+                    for b in text {
+                        render_block(ui, b, images, thumbs, ctx, out);
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            i = j;
+            continue;
+        }
+        render_block(ui, &blocks[i], images, thumbs, ctx, out);
+        i += 1;
+    }
+}
+
+fn thumb_image(ui: &mut Ui, url: &str, link: Option<&str>, images: &mut RemoteImages, thumbs: &mut Thumbs, ctx: &egui::Context, out: &mut Vec<Out>) {
+    let size = 72.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), egui::Sense::click());
+    let path = images.path(ctx, url);
+    crate::ui::art::paint(ui, thumbs, path.as_deref(), rect, 10, ICON_IMAGE);
+    if let Some(l) = link {
+        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            out.push(Out::OpenUrl(l.to_string()));
+        }
+    }
+}
+
 fn render_block(ui: &mut Ui, block: &Block, images: &mut RemoteImages, thumbs: &mut Thumbs, ctx: &egui::Context, out: &mut Vec<Out>) {
     let p = widgets::palette(ui);
     match block {
@@ -460,7 +578,7 @@ fn render_block(ui: &mut Ui, block: &Block, images: &mut RemoteImages, thumbs: &
                 2 => 17.0,
                 _ => 15.0,
             };
-            ui.label(widgets::title_text(text, size).color(if *level == 1 { p.primary } else { p.on_surface }));
+            ui.add(egui::Label::new(widgets::title_text(text, size).color(if *level == 1 { p.primary } else { p.on_surface })).wrap());
             ui.add_space(4.0);
         }
         Block::Paragraph(spans) => {
@@ -468,35 +586,100 @@ fn render_block(ui: &mut Ui, block: &Block, images: &mut RemoteImages, thumbs: &
             ui.add_space(6.0);
         }
         Block::Item(spans) => {
-            ui.horizontal(|ui| {
+            ui.horizontal_top(|ui| {
                 ui.label(RichText::new("•").color(p.primary));
-                spans_ui(ui, spans, out);
+                ui.vertical(|ui| spans_ui(ui, spans, out));
             });
         }
-        Block::Quote(spans) => {
-            egui::Frame::new().fill(p.surface_container_high).corner_radius(CornerRadius::same(12)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                spans_ui(ui, spans, out);
-            });
-            ui.add_space(6.0);
+        Block::Quote(inner) => {
+            // A tonal card with a primary bar on the left.
+            let resp = egui::Frame::new()
+                .fill(p.surface_container_high)
+                .corner_radius(CornerRadius::same(12))
+                .inner_margin(egui::Margin { left: 16, right: 12, top: 10, bottom: 6 })
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    render_blocks(ui, inner, images, thumbs, ctx, out);
+                });
+            let r = resp.response.rect;
+            let bar = egui::Rect::from_min_max(r.min + vec2(6.0, 10.0), egui::pos2(r.min.x + 9.0, r.max.y - 10.0));
+            ui.painter().rect_filled(bar, CornerRadius::same(2), p.primary);
+            ui.add_space(8.0);
         }
-        Block::Image(url) => {
+        Block::Table(rows) => {
+            table(ui, rows, out);
+            ui.add_space(8.0);
+        }
+        Block::Image { url, thumb, link } => {
+            if *thumb {
+                thumb_image(ui, url, link.as_deref(), images, thumbs, ctx, out);
+                ui.add_space(6.0);
+                return;
+            }
             let w = ui.available_width().min(640.0);
-            match images.path(ctx, url).and_then(|path| thumbs.get(&path)) {
+            let resp = match images.path(ctx, url).and_then(|path| thumbs.get(&path)) {
                 Some(tex) => {
                     let [tw, th] = tex.size();
+                    // Never upscale small images (icons, badges).
+                    let w = w.min(tw as f32);
                     let h = w * th as f32 / tw.max(1) as f32;
-                    ui.add(egui::Image::new(&tex).fit_to_exact_size(vec2(w, h)).corner_radius(12));
+                    ui.add(egui::Image::new(&tex).fit_to_exact_size(vec2(w, h)).corner_radius(12).sense(egui::Sense::click()))
                 }
                 None => {
-                    let (rect, _) = ui.allocate_exact_size(vec2(w, w * 0.5), egui::Sense::hover());
+                    let (rect, resp) = ui.allocate_exact_size(vec2(w, w * 0.5), egui::Sense::click());
                     ui.painter().rect_filled(rect, CornerRadius::same(12), p.surface_container_high);
                     widgets::paint_icon(ui, ICON_IMAGE, rect.center(), 32.0, p.on_surface_variant);
+                    resp
+                }
+            };
+            if let Some(l) = link {
+                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(l).clicked() {
+                    out.push(Out::OpenUrl(l.clone()));
                 }
             }
             ui.add_space(6.0);
         }
     }
+}
+
+/// A table with M3 styling: header row on a tonal fill, hairline row dividers.
+fn table(ui: &mut Ui, rows: &[Vec<Cell>], out: &mut Vec<Out>) {
+    let p = widgets::palette(ui);
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(0).max(1);
+    let id = ui.next_auto_id();
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, p.outline_variant))
+        .corner_radius(CornerRadius::same(12))
+        .inner_margin(egui::Margin::same(0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let col_w = (ui.available_width() - 2.0) / cols as f32;
+            for (r, row) in rows.iter().enumerate() {
+                let header = row.iter().all(|c| c.header);
+                let fill = if header { p.surface_container_high } else { egui::Color32::TRANSPARENT };
+                egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(0, 6)).show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for c in 0..cols {
+                            ui.allocate_ui_with_layout(vec2(col_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.set_width(col_w);
+                                egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 0)).show(ui, |ui| {
+                                    if let Some(cell) = row.get(c) {
+                                        spans_ui(ui, &cell.spans, out);
+                                    }
+                                });
+                            });
+                        }
+                    });
+                });
+                if r + 1 < rows.len() {
+                    let y = ui.cursor().top();
+                    let x = ui.max_rect().x_range();
+                    ui.painter().hline(x, y, egui::Stroke::new(1.0, p.outline_variant));
+                }
+            }
+        });
+    let _ = id;
 }
 
 fn news(ui: &mut Ui, extras: &mut Extras, out: &mut Vec<Out>) {
