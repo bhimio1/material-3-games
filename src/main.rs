@@ -15,7 +15,6 @@ mod overlay;
 mod session;
 mod steam;
 mod sys;
-mod theme;
 mod thumbs;
 mod ui;
 mod watch;

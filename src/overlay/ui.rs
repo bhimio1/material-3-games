@@ -9,7 +9,7 @@ use crate::ui::steamui::{self, Tab};
 use crate::ui::widgets::{self, switch, ButtonKind};
 use crate::ui::format_playtime;
 use egui::{pos2, vec2, Color32, CornerRadius, Frame, Margin, Rect, RichText, Ui};
-use egui_material_icons::icons::*;
+use material_3_ui::icons::icons::*;
 
 const SHEET_WIDTH: f32 = 440.0;
 
@@ -91,7 +91,7 @@ fn header(ui: &mut Ui, o: &mut Overlay) {
 }
 
 fn section_tabs(ui: &mut Ui, o: &mut Overlay) {
-    let mut options: Vec<(Section, egui_material_icons::MaterialIcon, &str)> = vec![(Section::Quick, ICON_TUNE, "")];
+    let mut options: Vec<(Section, material_3_ui::icons::MaterialIcon, &str)> = vec![(Section::Quick, ICON_TUNE, "")];
     if let Some(g) = o.game() {
         for t in Tab::for_game(g) {
             options.push((Section::Extras(t), t.icon(), ""));

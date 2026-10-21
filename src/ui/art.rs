@@ -4,7 +4,7 @@
 use super::widgets;
 use crate::thumbs::Thumbs;
 use egui::{epaint::RectShape, pos2, Color32, CornerRadius, Rect, Ui};
-use egui_material_icons::MaterialIcon;
+use material_3_ui::icons::MaterialIcon;
 
 /// UV rect that center-crops an image of `size` to the aspect of `rect`.
 fn crop_uv(size: [usize; 2], rect: Rect) -> Rect {

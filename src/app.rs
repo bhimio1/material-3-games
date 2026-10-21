@@ -1,18 +1,17 @@
 //! App state, theme, library scanning, launching and action dispatch. The
 //! same `App` drives the desktop window and the big-picture mode.
 
-use crate::config::{ColorScheme, Config, ThemeSource};
+use crate::config::Config;
 use crate::hypr;
 use crate::launch::{self, Context};
 use crate::library::{self, Game};
 use crate::session;
 use crate::sys::task::Task;
 use crate::sys::{cmd, term};
-use crate::theme::{sources, style, M3Palette};
 use crate::thumbs::Thumbs;
-use crate::ui::toasts::{Toast, Toasts};
-use crate::ui::{self, bigpicture, pages, widgets, Action, Actions, Filter, Page, ToastKind};
+use crate::ui::{self, bigpicture, pages, Action, Actions, Filter, Page, Toast, ToastKind, Toasts};
 use egui::{CornerRadius, Frame, Margin};
+use material_3_ui::theme::{M3Palette, ThemeManager, ThemeSettings};
 use std::path::PathBuf;
 use std::process::Child;
 use std::time::{Duration, Instant};
@@ -48,6 +47,7 @@ pub struct Gamescope {
 pub struct App {
     pub ctx: egui::Context,
     pub palette: M3Palette,
+    pub theme: ThemeManager,
     pub config: Config,
     pub games: Vec<Game>,
     scan: Task<Vec<Game>>,
@@ -73,7 +73,6 @@ pub struct App {
     /// A Steam edit waiting for "Restart Steam" confirmation.
     pub steam_confirm: Option<ui::SteamJob>,
     steam_job: Task<Result<String, String>>,
-    system_dark: Option<bool>,
     _watcher: Option<notify::RecommendedWatcher>,
     events: flume::Receiver<PathBuf>,
     rescan_at: Option<Instant>,
@@ -82,11 +81,11 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, big_picture: bool) -> Self {
         let ctx = cc.egui_ctx.clone();
-        style::install_fonts(&ctx);
         let config = Config::load();
+        let theme = ThemeManager::new(&ctx, &theme_settings(&config, big_picture));
         let home = crate::sys::paths::home();
 
-        // One watcher for the theme file and the game sources.
+        // One watcher for the game sources (the theme manager watches the palette).
         let (tx, events) = flume::unbounded();
         let watcher = {
             use notify::Watcher;
@@ -103,11 +102,7 @@ impl App {
             })
             .ok()
             .map(|mut w| {
-                let mut dirs = library::watch_dirs(&home);
-                if let Some(d) = sources::end4_colors_path().and_then(|p| p.parent().map(PathBuf::from)) {
-                    dirs.push(d);
-                }
-                for d in dirs.into_iter().filter(|d| d.is_dir()) {
+                for d in library::watch_dirs(&home).into_iter().filter(|d| d.is_dir()) {
                     let _ = w.watch(&d, notify::RecursiveMode::NonRecursive);
                 }
                 w
@@ -116,7 +111,8 @@ impl App {
 
         let rules_installed = hypr::rules_installed(&hypr::target(&home));
         let mut app = Self {
-            palette: M3Palette::from_seed(crate::theme::palette::DEFAULT_SEED, true),
+            palette: theme.palette().clone(),
+            theme,
             games: Vec::new(),
             scan: Task::default(),
             covers: Task::default(),
@@ -137,14 +133,13 @@ impl App {
             rules_installed,
             steam_confirm: None,
             steam_job: Task::default(),
-            system_dark: ctx.system_theme().map(|t| t == egui::Theme::Dark),
             _watcher: watcher,
             events,
             rescan_at: None,
             config,
             ctx,
         };
-        app.apply_theme();
+        app.theme_error();
         if big_picture && crate::gamescope::active() {
             app.gamescope = setup_gamescope(cc);
             start_overlay();
@@ -221,36 +216,18 @@ impl App {
 
     // ------------------------------------------------------------------ theme
 
-    fn wants_dark(&self) -> bool {
-        match self.config.color_scheme {
-            ColorScheme::Light => false,
-            ColorScheme::Dark => true,
-            ColorScheme::System => self.system_dark.unwrap_or(true),
-        }
-    }
-
-    pub fn theme_file(&self) -> Option<PathBuf> {
-        match self.config.theme_source {
-            ThemeSource::Auto => sources::auto_theme_path(),
-            ThemeSource::Seed => None,
-        }
-    }
-
+    /// Re-apply the appearance settings (after they changed).
     pub fn apply_theme(&mut self) {
-        let dark = self.wants_dark();
-        let palette = match self.theme_file() {
-            Some(path) => M3Palette::from_theme_json(&path).unwrap_or_else(|_| M3Palette::from_seed(&self.config.seed_color, dark)),
-            None => M3Palette::from_seed(&self.config.seed_color, dark),
-        };
-        style::apply(&self.ctx, &palette);
-        widgets::set_palette(&self.ctx, palette.clone());
-        widgets::set_filled_icons(self.config.filled_icons);
-        // Big picture is read from the couch: everything bigger.
-        let scale = self.config.ui_scale.clamp(0.6, 2.5) * if self.is_big_picture() { 1.4 } else { 1.0 };
-        if (self.ctx.zoom_factor() - scale).abs() > f32::EPSILON {
-            self.ctx.set_zoom_factor(scale);
+        self.theme.apply(&theme_settings(&self.config, self.is_big_picture()));
+        self.palette = self.theme.palette().clone();
+        self.theme_error();
+    }
+
+    /// Show a palette file that couldn't be read.
+    fn theme_error(&mut self) {
+        if let Some(e) = self.theme.take_error() {
+            self.toast(e, ToastKind::Error);
         }
-        self.palette = palette;
     }
 
     // ------------------------------------------------------------- background
@@ -303,14 +280,8 @@ impl App {
         }
 
         let changed: Vec<PathBuf> = self.events.try_iter().collect();
-        if !changed.is_empty() {
-            let theme = self.theme_file();
-            if changed.iter().any(|p| Some(p) == theme.as_ref()) {
-                self.apply_theme();
-            }
-            if changed.iter().any(|p| Some(p) != theme.as_ref() && !p.starts_with(library::cache_dir())) {
-                self.rescan_at = Some(Instant::now() + Duration::from_secs(2));
-            }
+        if changed.iter().any(|p| !p.starts_with(library::cache_dir())) {
+            self.rescan_at = Some(Instant::now() + Duration::from_secs(2));
         }
         if self.rescan_at.is_some_and(|t| Instant::now() >= t) && !self.scan.running() {
             self.rescan_at = None;
@@ -350,10 +321,10 @@ impl App {
             }
         }
 
-        let system_dark = self.ctx.system_theme().map(|t| t == egui::Theme::Dark);
-        if system_dark != self.system_dark {
-            self.system_dark = system_dark;
-            self.apply_theme();
+        // The desktop's palette file and light/dark preference.
+        if self.theme.poll(&theme_settings(&self.config, self.is_big_picture())) {
+            self.palette = self.theme.palette().clone();
+            self.theme_error();
         }
     }
 
@@ -451,9 +422,14 @@ impl App {
             Action::Toast(t, k) => self.toast(t, k),
             Action::Launch(id) => self.launch(&id),
             Action::Install { packages } => {
-                let script = crate::sys::os::install_script(&packages);
+                let packages: Vec<&str> = packages.iter().map(String::as_str).collect();
+                let script = crate::sys::arch::install_command(&packages, crate::sys::arch::AurHelper::Auto);
                 match term::run(&self.config.terminal, &script) {
                     Ok(t) => self.toast(format!("Installing in {t}"), ToastKind::Info),
+                    // This app's page is Settings, not Preferences.
+                    Err(_) if term::pick(&self.config.terminal).is_none() => {
+                        self.toast("No terminal found. Set one in Settings → Terminal.", ToastKind::Error)
+                    }
                     Err(e) => self.toast(e, ToastKind::Error),
                 }
             }
@@ -580,7 +556,8 @@ impl eframe::App for App {
             }
             self.layout(ui);
         }
-        ui::toasts::show(&self.ctx.clone(), self);
+        let fired = self.toasts.show(&self.ctx, &self.palette, 20.0);
+        self.actions.extend(fired);
         self.process_actions();
     }
 
@@ -637,7 +614,7 @@ fn run_steam_job(job: &ui::SteamJob, specs: &[crate::steam::shortcuts::Spec]) ->
 /// "Steam is running" confirmation for Steam edits.
 fn steam_confirm_dialog(ctx: &egui::Context, app: &mut App) {
     use crate::ui::widgets::{self, ButtonKind};
-    use egui_material_icons::icons::*;
+    use material_3_ui::icons::icons::*;
     let Some(job) = app.steam_confirm.clone() else {
         return;
     };
@@ -681,4 +658,14 @@ fn start_overlay() {
     if let Ok(exe) = std::env::current_exe() {
         let _ = cmd::spawn_detached(&exe.to_string_lossy(), &["__overlay"]);
     }
+}
+
+/// The appearance settings to apply: big picture is read from the couch,
+/// so everything is bigger there.
+fn theme_settings(config: &Config, big_picture: bool) -> ThemeSettings {
+    let mut s = config.appearance.clone();
+    if big_picture {
+        s.ui_scale *= 1.4;
+    }
+    s
 }
