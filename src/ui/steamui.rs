@@ -105,6 +105,8 @@ pub struct Extras {
     /// The user asked for every language.
     guides_all_languages: bool,
     news: Task<Result<Vec<NewsItem>, String>>,
+    /// News posts shown in full (by url).
+    news_open: std::collections::HashSet<String>,
     guide: Task<Result<Guide, String>>,
     /// The guide being read (as it would be pinned).
     pub reading: Option<PinnedGuide>,
@@ -132,6 +134,7 @@ impl Extras {
             guides_language: None,
             guides_all_languages: false,
             news: Task::default(),
+            news_open: Default::default(),
             guide: Task::default(),
             reading: std::env::var("M3_GAMES_GUIDE").ok().map(|id| PinnedGuide { title: "Guide".into(), steam_id: id, location: String::new() }),
             shots: Task::default(),
@@ -228,7 +231,7 @@ pub fn show(ui: &mut Ui, extras: &mut Extras, game: &Game, config: &mut Config, 
                     extras.news.spawn(&ctx, move || crate::steam::news::fetch(&a));
                 }
                 extras.news.poll();
-                news(ui, extras, &mut out);
+                news(ui, extras, thumbs, &mut out);
             }
         }
         Tab::Notes => notes(ui, extras, game, config, &mut out),
@@ -682,8 +685,27 @@ fn table(ui: &mut Ui, rows: &[Vec<Cell>], out: &mut Vec<Out>) {
     let _ = id;
 }
 
-fn news(ui: &mut Ui, extras: &mut Extras, out: &mut Vec<Out>) {
+/// How many of a post's blocks to show before "Show more": up to the
+/// second image or about 600 characters of text.
+fn news_preview_len(blocks: &[Block]) -> usize {
+    let (mut chars, mut images) = (0, 0);
+    for (i, b) in blocks.iter().enumerate() {
+        match b {
+            Block::Image { .. } => images += 1,
+            Block::Heading(_, t) => chars += t.len(),
+            Block::Paragraph(s) | Block::Item(s) => chars += s.iter().map(|s| s.text.len()).sum::<usize>(),
+            _ => chars += 200,
+        }
+        if images > 1 || chars > 600 {
+            return i.max(1);
+        }
+    }
+    blocks.len()
+}
+
+fn news(ui: &mut Ui, extras: &mut Extras, thumbs: &mut Thumbs, out: &mut Vec<Out>) {
     let p = widgets::palette(ui);
+    let ctx = ui.ctx().clone();
     match extras.news.value.clone() {
         None => common::loading(ui, "Loading news…"),
         Some(Err(e)) => common::empty_hint(ui, &format!("Couldn't load news: {e}")),
@@ -692,16 +714,32 @@ fn news(ui: &mut Ui, extras: &mut Extras, out: &mut Vec<Out>) {
             for n in items {
                 common::card(ui, "", |ui| {
                     ui.add_space(6.0);
-                    ui.label(widgets::title_text(&n.title, 16.0).color(p.on_surface));
+                    ui.add(egui::Label::new(widgets::title_text(&n.title, 16.0).color(p.on_surface)).wrap());
                     let when = chrono::DateTime::from_timestamp(n.date, 0).map(|d| d.with_timezone(&chrono::Local).format("%b %e, %Y").to_string()).unwrap_or_default();
                     ui.label(RichText::new(format!("{when} · {}", n.feedlabel)).size(12.5).color(p.on_surface_variant));
                     ui.add_space(6.0);
-                    let preview: String = n.contents.chars().take(900).collect();
-                    let more = n.contents.chars().count() > 900;
-                    ui.add(egui::Label::new(RichText::new(if more { format!("{preview}…") } else { preview }).color(p.on_surface)).wrap());
-                    if !n.url.is_empty() && widgets::button(ui, ButtonKind::Text, Some(ICON_OPEN_IN_NEW), "Read more").clicked() {
-                        out.push(Out::OpenUrl(n.url.clone()));
+                    let open = extras.news_open.contains(&n.url);
+                    let shown = if open { n.blocks.len() } else { news_preview_len(&n.blocks) };
+                    if n.blocks.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(&n.contents).color(p.on_surface)).wrap());
+                    } else {
+                        render_blocks(ui, &n.blocks[..shown], &mut extras.images, thumbs, &ctx, out);
                     }
+                    ui.horizontal_wrapped(|ui| {
+                        if shown < n.blocks.len() || open {
+                            let (icon, label) = if open { (ICON_EXPAND_LESS, "Show less") } else { (ICON_EXPAND_MORE, "Show more") };
+                            if widgets::button(ui, ButtonKind::Tonal, Some(icon), label).clicked() {
+                                if open {
+                                    extras.news_open.remove(&n.url);
+                                } else {
+                                    extras.news_open.insert(n.url.clone());
+                                }
+                            }
+                        }
+                        if !n.url.is_empty() && widgets::button(ui, ButtonKind::Text, Some(ICON_OPEN_IN_NEW), "Open in browser").clicked() {
+                            out.push(Out::OpenUrl(n.url.clone()));
+                        }
+                    });
                     ui.add_space(4.0);
                 });
             }
