@@ -15,7 +15,7 @@ use crate::library::Game;
 use crate::session::{self, Running};
 use crate::sys::quick;
 use crate::sys::task::Task;
-use crate::theme::{sources, style, M3Palette};
+use material_3_ui::theme::{ColorScheme, M3Palette, ThemeManager, ThemeSettings};
 use crate::thumbs::Thumbs;
 use ipc::Msg;
 use std::path::PathBuf;
@@ -63,6 +63,7 @@ pub enum Section {
 pub struct Overlay {
     pub ctx: egui::Context,
     pub palette: M3Palette,
+    theme: ThemeManager,
     pub config: Config,
     pub games: Vec<Game>,
     scan: Task<Vec<Game>>,
@@ -92,7 +93,7 @@ pub struct Overlay {
 impl Overlay {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let ctx = cc.egui_ctx.clone();
-        style::install_fonts(&ctx);
+        let config = Config::load();
         let window = gamescope::x11_window(cc);
         let ctl = Ctl::connect().ok();
         if let (Some(c), Some(w)) = (&ctl, window) {
@@ -103,8 +104,9 @@ impl Overlay {
         let ipc = ipc::serve(&ipc::socket_path(), move || wake.request_repaint()).ok();
         let pad = crate::gamepad::start_inputs(ctx.clone(), false);
         let mut o = Self {
-            palette: M3Palette::from_seed(crate::theme::palette::DEFAULT_SEED, true),
-            config: Config::load(),
+            palette: M3Palette::from_seed(&config.appearance.seed_color, true),
+            theme: ThemeManager::new(&ctx, &overlay_theme(&config)),
+            config,
             games: Vec::new(),
             scan: Task::default(),
             thumbs: Thumbs::new(ctx.clone()),
@@ -146,16 +148,8 @@ impl Overlay {
     }
 
     fn apply_theme(&mut self) {
-        let palette = match self.config.theme_source {
-            crate::config::ThemeSource::Auto => sources::auto_theme_path().and_then(|p| M3Palette::from_theme_json(&p).ok()),
-            crate::config::ThemeSource::Seed => None,
-        }
-        .unwrap_or_else(|| M3Palette::from_seed(&self.config.seed_color, true));
-        style::apply(&self.ctx, &palette);
-        crate::ui::widgets::set_palette(&self.ctx, palette.clone());
-        crate::ui::widgets::set_filled_icons(self.config.filled_icons);
-        self.ctx.set_zoom_factor(self.config.ui_scale.clamp(0.6, 2.5) * 1.25);
-        self.palette = palette;
+        self.theme.apply(&overlay_theme(&self.config));
+        self.palette = self.theme.palette().clone();
     }
 
     fn rescan(&mut self) {
@@ -307,6 +301,10 @@ impl Overlay {
     }
 
     fn poll(&mut self) {
+        // Follow the desktop's palette while the overlay is open.
+        if self.theme.poll(&overlay_theme(&self.config)) {
+            self.palette = self.theme.palette().clone();
+        }
         self.thumbs.poll();
         if self.scan.poll() {
             if let Some(g) = self.scan.value.take() {
@@ -462,4 +460,14 @@ pub fn run() -> eframe::Result {
         eframe::NativeOptions { viewport, ..Default::default() },
         Box::new(|cc| Ok(Box::new(Overlay::new(cc)))),
     )
+}
+
+/// The overlay is always dark (it sits on top of a game) and a little
+/// larger than the desktop window.
+fn overlay_theme(config: &Config) -> ThemeSettings {
+    ThemeSettings {
+        scheme: ColorScheme::Dark,
+        ui_scale: config.appearance.ui_scale.clamp(0.6, 2.5) * 1.25,
+        ..config.appearance.clone()
+    }
 }

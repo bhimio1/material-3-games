@@ -6,7 +6,7 @@ use crate::thumbs::{placeholder_color, Thumbs};
 use crate::ui::widgets::{self, segmented};
 use crate::ui::{art, common, Action, Filter, Page};
 use egui::{pos2, vec2, Align2, CornerRadius, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui};
-use egui_material_icons::icons::*;
+use material_3_ui::icons::icons::*;
 
 /// Cover aspect (width / height), Steam's 600x900 portrait.
 pub const ASPECT: f32 = 2.0 / 3.0;

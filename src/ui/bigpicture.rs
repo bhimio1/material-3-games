@@ -10,7 +10,7 @@ use crate::gamepad::{self, Nav};
 use crate::library::Game;
 use crate::sys::cmd;
 use egui::{pos2, vec2, Align2, Color32, CornerRadius, Frame, Margin, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
-use egui_material_icons::icons::*;
+use material_3_ui::icons::icons::*;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Overlay {
@@ -48,7 +48,7 @@ impl State {
     }
 }
 
-const MENU: [(&str, egui_material_icons::MaterialIcon); 7] = [
+const MENU: [(&str, material_3_ui::icons::MaterialIcon); 7] = [
     ("Resume", ICON_PLAY_ARROW),
     ("Volume up", ICON_VOLUME_UP),
     ("Volume down", ICON_VOLUME_DOWN),
@@ -164,7 +164,7 @@ fn hero_card(ui: &mut Ui, app: &mut App, game: &Game, size: egui::Vec2, focused:
     resp
 }
 
-fn menu_list(ui: &mut Ui, items: &[(&str, egui_material_icons::MaterialIcon)], selected: usize) -> Option<usize> {
+fn menu_list(ui: &mut Ui, items: &[(&str, material_3_ui::icons::MaterialIcon)], selected: usize) -> Option<usize> {
     let p = widgets::palette(ui);
     let mut clicked = None;
     for (i, (label, icon)) in items.iter().enumerate() {
@@ -188,7 +188,7 @@ fn menu_list(ui: &mut Ui, items: &[(&str, egui_material_icons::MaterialIcon)], s
     clicked
 }
 
-fn overlay_frame<R>(ui: &mut Ui, p: &crate::theme::M3Palette, width: f32, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+fn overlay_frame<R>(ui: &mut Ui, p: &material_3_ui::theme::M3Palette, width: f32, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
     let screen = ui.ctx().content_rect();
     ui.painter().rect_filled(screen, CornerRadius::ZERO, p.scrim.gamma_multiply(0.6));
     egui::Area::new(egui::Id::unique("m3g-overlay"))

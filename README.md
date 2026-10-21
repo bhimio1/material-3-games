@@ -207,13 +207,14 @@ src/
   steam/          binary/text VDF, shortcuts (Steam Input), achievements, guides, news,
                   Proton & launch options, Web API
   procenv.rs      reading other processes' environment
-  sys/            commands, terminals, background tasks, os-release and pacman (os.rs),
-                  sched-ext via scxctl (scx.rs), overlay quick settings (quick.rs)
+  sys/            sched-ext via scxctl (scx.rs), overlay quick settings (quick.rs)
   gamepad.rs      controller input (gilrs)
   covers.rs       cover cache: Steam CDN, Heroic art, SteamGridDB
-  ui/             sidebar, pages, big picture, Steam extras (steamui.rs), M3 widgets
+  ui/             sidebar, pages, big picture, Steam extras (steamui.rs)
 packaging/        PKGBUILD, AUR -bin template, desktop files, m3-session
 ```
+
+The palette, egui style, fonts, Material 3 widgets, page scaffolding, toasts, the Appearance settings, and the command, terminal, task and pacman helpers come from the shared [material-3-ui](https://github.com/bhimio1/material-3-ui) crate.
 
 Run the tests with `cargo test`.
 
@@ -221,4 +222,4 @@ Run the tests with `cargo test`.
 
 MIT, see [LICENSE](LICENSE).
 
-Fonts: Inter (SIL OFL 1.1, see `assets/fonts/LICENSE-Inter.txt`). Icons: Material Symbols, via `egui_material_icons`.
+Fonts: Inter (SIL OFL 1.1, see `assets/fonts/LICENSE-Inter.txt`). Icons: Material Symbols, via `egui_material_icons`. Both are built in through material-3-ui.

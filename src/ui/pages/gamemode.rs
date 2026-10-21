@@ -7,7 +7,7 @@ use crate::sys::cmd;
 use crate::ui::widgets::{self, ButtonKind};
 use crate::ui::{common, Action, Page};
 use egui::{vec2, CornerRadius, Frame, Margin, RichText, Ui};
-use egui_material_icons::icons::*;
+use material_3_ui::icons::icons::*;
 
 fn chip(ui: &mut Ui, ok: bool, text: &str) {
     let p = widgets::palette(ui);

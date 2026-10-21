@@ -82,7 +82,7 @@ impl Thumbs {
 }
 
 /// A stable tint per game for covers that are missing.
-pub fn placeholder_color(name: &str, p: &crate::theme::M3Palette) -> Color32 {
+pub fn placeholder_color(name: &str, p: &material_3_ui::theme::M3Palette) -> Color32 {
     let h = name.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
     match h % 3 {
         0 => p.primary_container,

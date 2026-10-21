@@ -5,7 +5,7 @@ use crate::library::{Launch, Source};
 use crate::ui::widgets::{self, switch, ButtonKind};
 use crate::ui::{art, common, format_last_played, format_playtime, steamui, Action, Page, SteamJob};
 use egui::{pos2, vec2, Align2, Color32, CornerRadius, Mesh, Rect, RichText, Ui};
-use egui_material_icons::icons::*;
+use material_3_ui::icons::icons::*;
 
 #[derive(Default)]
 pub struct State {

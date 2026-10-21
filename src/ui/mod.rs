@@ -6,18 +6,16 @@ pub mod common;
 pub mod pages;
 pub mod sidebar;
 pub mod steamui;
-pub mod toasts;
-pub mod widgets;
 
 use crate::library::Source;
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ToastKind {
-    Info,
-    Success,
-    Error,
-}
+pub use material_3_ui::toasts::ToastKind;
+pub use material_3_ui::widgets;
+
+/// The snackbar stack; toast buttons carry an [`Action`].
+pub type Toasts = material_3_ui::toasts::Toasts<Action>;
+pub type Toast = material_3_ui::toasts::Toast<Action>;
 
 /// Library filter in the sidebar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

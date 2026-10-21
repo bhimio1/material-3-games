@@ -12,7 +12,7 @@ use crate::thumbs::Thumbs;
 use crate::ui::widgets::{self, ButtonKind};
 use crate::ui::common;
 use egui::{vec2, CornerRadius, RichText, Ui};
-use egui_material_icons::icons::*;
+use material_3_ui::icons::icons::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -63,7 +63,7 @@ impl Tab {
         }
     }
 
-    pub fn icon(self) -> egui_material_icons::MaterialIcon {
+    pub fn icon(self) -> material_3_ui::icons::MaterialIcon {
         match self {
             Tab::Achievements => ICON_TROPHY,
             Tab::Guides => ICON_MENU_BOOK,
@@ -199,7 +199,7 @@ pub fn load_guide(g: &PinnedGuide) -> Result<Guide, String> {
 
 /// The tab strip.
 pub fn tabs(ui: &mut Ui, extras: &mut Extras, game: &Game) -> bool {
-    let options: Vec<(Tab, egui_material_icons::MaterialIcon, &str)> = Tab::for_game(game).into_iter().map(|t| (t, t.icon(), t.label())).collect();
+    let options: Vec<(Tab, material_3_ui::icons::MaterialIcon, &str)> = Tab::for_game(game).into_iter().map(|t| (t, t.icon(), t.label())).collect();
     if !options.iter().any(|(t, _, _)| *t == extras.tab) {
         extras.tab = options[0].0;
     }
@@ -521,7 +521,7 @@ fn spans_ui(ui: &mut Ui, spans: &[Span], out: &mut Vec<Out>) {
         for s in spans {
             let mut t = RichText::new(&s.text).size(14.0).color(p.on_surface);
             if s.bold {
-                t = t.family(crate::theme::style::medium_family());
+                t = t.family(material_3_ui::theme::style::medium_family());
             }
             if s.italic {
                 t = t.italics();

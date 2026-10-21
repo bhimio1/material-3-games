@@ -7,7 +7,7 @@ use crate::sys::{cmd, task::Task};
 use crate::ui::widgets::{self, segmented, ButtonKind};
 use crate::ui::{common, Action, Page, ToastKind};
 use egui::Ui;
-use egui_material_icons::icons::*;
+use material_3_ui::icons::icons::*;
 
 #[derive(Default)]
 pub struct State {

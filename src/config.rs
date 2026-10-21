@@ -1,26 +1,75 @@
 //! Preferences (`~/.config/m3-games/config.toml`): theme, sources, Hyprland
 //! behaviour, gamescope defaults and per-game launch options.
 
+use material_3_ui::theme::ThemeSettings;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ColorScheme {
-    #[default]
-    System,
-    Light,
-    Dark,
-}
+/// This app's seed color when there's no desktop palette.
+pub const DEFAULT_SEED: &str = "#7C4DFF";
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ThemeSource {
-    /// The end4-pC shell's colors, else the seed color.
-    #[default]
-    Auto,
-    Seed,
+/// The appearance settings as stored at the top of config.toml, under
+/// this app's own names; in memory they're the shared [`ThemeSettings`].
+mod stored_appearance {
+    use super::DEFAULT_SEED;
+    use material_3_ui::theme::{ColorScheme, ThemeSettings, ThemeSource};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(default)]
+    struct Stored {
+        theme_source: ThemeSource,
+        color_scheme: ColorScheme,
+        seed_color: String,
+        filled_icons: bool,
+        ui_scale: f32,
+    }
+
+    impl Default for Stored {
+        fn default() -> Self {
+            Self {
+                theme_source: ThemeSource::Auto,
+                color_scheme: ColorScheme::System,
+                seed_color: DEFAULT_SEED.into(),
+                filled_icons: true,
+                ui_scale: 1.0,
+            }
+        }
+    }
+
+    pub fn default() -> ThemeSettings {
+        let s = Stored::default();
+        ThemeSettings {
+            source: s.theme_source,
+            scheme: s.color_scheme,
+            seed_color: s.seed_color,
+            filled_icons: s.filled_icons,
+            ui_scale: s.ui_scale,
+        }
+    }
+
+    pub fn serialize<S: Serializer>(a: &ThemeSettings, ser: S) -> Result<S::Ok, S::Error> {
+        Stored {
+            theme_source: a.source,
+            color_scheme: a.scheme,
+            seed_color: a.seed_color.clone(),
+            filled_icons: a.filled_icons,
+            ui_scale: a.ui_scale,
+        }
+        .serialize(ser)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<ThemeSettings, D::Error> {
+        let s = Stored::deserialize(de)?;
+        Ok(ThemeSettings {
+            source: s.theme_source,
+            scheme: s.color_scheme,
+            seed_color: s.seed_color,
+            filled_icons: s.filled_icons,
+            ui_scale: s.ui_scale,
+        })
+    }
 }
 
 /// gamescope settings for Game Mode and for per-game desktop use.
@@ -153,11 +202,10 @@ pub struct OverlayPrefs {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
-    pub theme_source: ThemeSource,
-    pub color_scheme: ColorScheme,
-    pub seed_color: String,
-    pub filled_icons: bool,
-    pub ui_scale: f32,
+    /// Stored flat as `theme_source`, `color_scheme`, `seed_color`,
+    /// `filled_icons` and `ui_scale`.
+    #[serde(flatten, with = "stored_appearance")]
+    pub appearance: ThemeSettings,
     pub steam: bool,
     pub lutris: bool,
     pub heroic: bool,
@@ -189,11 +237,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            theme_source: ThemeSource::Auto,
-            color_scheme: ColorScheme::System,
-            seed_color: "#7C4DFF".into(),
-            filled_icons: true,
-            ui_scale: 1.0,
+            appearance: stored_appearance::default(),
             steam: true,
             lutris: true,
             heroic: true,
@@ -297,5 +341,26 @@ mod tests {
         let mut c = c;
         assert!(c.learn_class("hl2_linux"));
         assert!(!c.learn_class("hl2_linux"));
+        assert_eq!(c.appearance.seed_color, DEFAULT_SEED);
+    }
+
+    #[test]
+    fn appearance_keeps_its_stored_names() {
+        use material_3_ui::theme::{ColorScheme, ThemeSource};
+        let old = "theme_source = \"seed\"\ncolor_scheme = \"light\"\nseed_color = \"#1E8E3E\"\nfilled_icons = false\nui_scale = 1.25\nperformance_mode = false\n\n[gamescope]\nfsr = true\n";
+        let c: Config = toml::from_str(old).unwrap();
+        assert_eq!(c.appearance.source, ThemeSource::Seed);
+        assert_eq!(c.appearance.scheme, ColorScheme::Light);
+        assert_eq!(c.appearance.seed_color, "#1E8E3E");
+        assert!(!c.appearance.filled_icons);
+        assert_eq!(c.appearance.ui_scale, 1.25);
+        assert!(!c.performance_mode && c.gamescope.fsr);
+
+        let saved = toml::to_string_pretty(&c).unwrap();
+        assert!(saved.contains("theme_source = \"seed\""), "{saved}");
+        assert!(saved.contains("color_scheme = \"light\""));
+        assert!(!saved.contains("appearance"));
+        let back: Config = toml::from_str(&saved).unwrap();
+        assert_eq!(back, c);
     }
 }

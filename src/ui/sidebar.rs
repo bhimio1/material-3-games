@@ -5,7 +5,7 @@ use super::{Action, Filter, Page};
 use crate::app::App;
 use crate::library::Source;
 use egui::{vec2, CornerRadius, Sense, Ui};
-use egui_material_icons::icons::*;
+use material_3_ui::icons::icons::*;
 
 pub fn show(ui: &mut Ui, app: &mut App) {
     let p = app.palette.clone();
